@@ -34,8 +34,17 @@ const (
 )
 
 // setBrowserHeaders 注入完整的浏览器请求头（Chat / Save / Validate 共用）
+//
+// 只发 UA 与 sec-ch-ua 而缺配套头时，上游风控看到的是"自称 Chrome 却自相矛盾"
+// 的指纹，反而比不发更容易被判定为脚本；Accept / Accept-Language 也要与
+// x-timezone 保持同一区域，避免"中文时区 + 英文语言"这种异常组合。
+//
+// 刻意不设置 Accept-Encoding：显式设置会关掉 net/http 的自动 gzip 解压，
+// 上游回压缩流时 SSE 解析会直接崩，交给 transport 协商即可。
 func setBrowserHeaders(h http.Header) {
 	h.Set("Content-Type", "application/json")
+	h.Set("Accept", "application/json, text/plain, */*")
+	h.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	h.Set("Origin", webBaseURL)
 	h.Set("Referer", webBaseURL+"/")
 	h.Set("x-timezone", "Asia/Shanghai")
@@ -48,25 +57,33 @@ func setBrowserHeaders(h http.Header) {
 	h.Set("sec-fetch-site", "same-origin")
 }
 
+// normalizeCredential 去掉从 DevTools 复制时容易带上的外层引号与空白。
+//
+// 上游对 ph 的校验发生在 URL 查询串上：带引号的 ph（%22…%22）会让 bot/chat 返回
+// 401 serviceLogin；而健康检查打的是 /open-apis/user/mi/get、只发 Cookie（那里
+// 本来就去掉了引号）——于是表现为"面板健康检查是绿的，但一条消息都发不出去"，
+// 换多少新 Cookie 都没用。统一在构造时清洗，避免每个使用点各修一遍。
+func normalizeCredential(s string) string {
+	return strings.Trim(strings.TrimSpace(s), "\"")
+}
+
 // buildCookie 构造与浏览器完全一致的 Cookie 头。
 // 2026-09 实测（用户 DevTools）：上游的 serviceToken cookie 名带 xiaomichatbot_ 前缀，
 // 值外层带双引号（DevTools Cookie 面板显示 "..."）。
 // 双发两种名字 + 保留引号形态，最大化兼容新旧两种会话格式。
 func (c *WebClient) buildCookie() string {
-	token := strings.Trim(c.serviceToken, "\"")
-	ph := strings.Trim(c.ph, "\"")
 	return fmt.Sprintf(
 		"userId=%s; serviceToken=%s; xiaomichatbot_serviceToken=%q; xiaomichatbot_ph=%q",
-		c.userID, token, token, ph,
+		c.userID, c.serviceToken, c.serviceToken, c.ph,
 	)
 }
 
 // WebClient 是 MiMo AI Studio 网页端客户端
 type WebClient struct {
-	httpClient *http.Client
+	httpClient   *http.Client
 	serviceToken string
-	userID      string
-	ph          string
+	userID       string
+	ph           string
 }
 
 // NewWebClient 创建网页端客户端
@@ -84,9 +101,9 @@ func NewWebClient(serviceToken, userID, ph string) *WebClient {
 	}
 	return &WebClient{
 		httpClient:   &http.Client{Timeout: 30 * time.Minute, Transport: transport},
-		serviceToken: serviceToken,
-		userID:       userID,
-		ph:           ph,
+		serviceToken: normalizeCredential(serviceToken),
+		userID:       normalizeCredential(userID),
+		ph:           normalizeCredential(ph),
 	}
 }
 
