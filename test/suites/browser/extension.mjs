@@ -19,6 +19,11 @@ export default defineSuite({
     const api = createApi({ base: gw.base });
     const browser = await launchWithExtension({ dir: EXT_DIR });
     const page = await browser.context.newPage();
+    // popup 里的异常不会让 Playwright 报错，只会表现为「点了没反应」，这里显式打出来
+    page.on('pageerror', err => console.log(`  [popup error] ${err.message}`));
+    page.on('console', msg => {
+      if (msg.type() === 'error') console.log(`  [popup console] ${msg.text()}`);
+    });
 
     const openPopup = async () => {
       await page.goto(browser.popupUrl);

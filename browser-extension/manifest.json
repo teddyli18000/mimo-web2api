@@ -5,7 +5,8 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoi+MYo0zCZjK2g3jGkEpci7onaImc9N8oskTYFJaysijMkd23Uz4XmzghxZjo1+KfsbA8+Ql+bYlNsncJyPjF+3SlRFDhx3pRSm1bIQIM12l92c8G9KWCZD9RSfIZbqiQR2u8Z2ZBO01ooBfy6EinYMsAx6EZASXu7Fe7Sk4aZ6PP9Xkajl3kp/j/Om0RWgCVKlMN90vJnDHV7LfkV55QSp9tvMbTO/0YoLq9AstIPIeUGJ70X6RL1HgAIkWPbPpBu7iU+DhLgvmFcqRDGVKtrDTbbCwP8CzTS/ZHPLyuOnyfssqYkbeq1d+15Bj5ymL7ESJlv5grvoWPh8iWDe/zQIDAQAB",
   "description": "一键将 MiMo 登录态同步到本机 MiMo Web2API 网关；同一账号重复同步只更新，不新增",
   "permissions": [
-    "cookies"
+    "cookies",
+    "storage"
   ],
   "host_permissions": [
     "https://*.xiaomimimo.com/*",
