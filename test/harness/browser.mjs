@@ -42,12 +42,15 @@ export async function launchWithExtension({ dir, headless = true } = {}) {
     popupUrl: `chrome-extension://${id}/popup.html`,
 
     // 扩展在 CI 里没有真实登录态，往它有 host 权限的域注入 dummy cookie。
+    // 必须带 secure：host_permissions 是 https://*.xiaomimimo.com/*，
+    // Chrome 只把 secure cookie 匹配给 https 权限，注入非 secure 的话扩展一个也看不到。
     async setMiMoCookies({ serviceToken, userId, ph } = {}) {
       const cookies = [];
-      const domain = 'aistudio.xiaomimimo.com';
-      if (serviceToken) cookies.push({ name: 'serviceToken', value: serviceToken, domain, path: '/' });
-      if (userId) cookies.push({ name: 'userId', value: userId, domain, path: '/' });
-      if (ph) cookies.push({ name: 'xiaomichatbot_ph', value: ph, domain, path: '/' });
+      const url = 'https://aistudio.xiaomimimo.com/';
+      const base = { url, path: '/', secure: true, sameSite: 'Lax' };
+      if (serviceToken) cookies.push({ ...base, name: 'serviceToken', value: serviceToken });
+      if (userId) cookies.push({ ...base, name: 'userId', value: userId });
+      if (ph) cookies.push({ ...base, name: 'xiaomichatbot_ph', value: ph });
       await context.addCookies(cookies);
     },
 

@@ -51,6 +51,17 @@ export default defineSuite({
           ph: 'dummy-ph==',
         });
         await openPopup();
+
+        // 先确认扩展真的看得到注入的 cookie，否则后面只会得到一句「未找到 Cookie」
+        const visible = await page.evaluate(async () => {
+          const list = await chrome.cookies.getAll({});
+          return list.map(c => `${c.domain}|${c.name}`);
+        });
+        assert.ok(
+          visible.some(v => v.includes('serviceToken')),
+          `扩展看不到注入的 cookie：${JSON.stringify(visible)}`,
+        );
+
         const result = await sync();
 
         assert.match(result.cls, /ok/, result.text);
