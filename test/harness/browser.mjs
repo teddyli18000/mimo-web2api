@@ -9,7 +9,6 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { chromium } from 'playwright';
 
 export function extensionIdFromKey(keyBase64) {
   const digest = createHash('sha256').update(Buffer.from(keyBase64, 'base64')).digest('hex').slice(0, 32);
@@ -17,6 +16,8 @@ export function extensionIdFromKey(keyBase64) {
 }
 
 export async function launchWithExtension({ dir, headless = true } = {}) {
+  // 延迟加载：offline/e2e job 没装 playwright，模块级的 import 会让它们直接崩
+  const { chromium } = await import('playwright');
   const manifest = JSON.parse(await readFile(path.join(dir, 'manifest.json'), 'utf8'));
   if (!manifest.key) throw new Error('manifest.json 缺少 key，无法固定扩展 ID');
   const id = extensionIdFromKey(manifest.key);

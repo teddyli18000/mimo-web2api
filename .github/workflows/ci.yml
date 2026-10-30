@@ -49,7 +49,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          # macOS 26 的 dyld 要求 LC_UUID，Go 1.22 的 linker 不写，go test 会 abort
+          go-version: '1.24.x'
           cache: true
 
       - name: Vet
