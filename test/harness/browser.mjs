@@ -47,7 +47,8 @@ export async function launchWithExtension({ dir, headless = true } = {}) {
     async setMiMoCookies({ serviceToken, userId, ph } = {}) {
       const cookies = [];
       const url = 'https://aistudio.xiaomimimo.com/';
-      const base = { url, path: '/', secure: true, sameSite: 'Lax' };
+      // 用 url 就不能再给 path/domain —— Playwright 会报 "Cookie should have either url or path"
+      const base = { url, secure: true, sameSite: 'Lax' };
       if (serviceToken) cookies.push({ ...base, name: 'serviceToken', value: serviceToken });
       if (userId) cookies.push({ ...base, name: 'userId', value: userId });
       if (ph) cookies.push({ ...base, name: 'xiaomichatbot_ph', value: ph });
