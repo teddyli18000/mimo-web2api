@@ -1,5 +1,5 @@
 {
-  "name": "mimo-web-proxy-sdk-tests",
+  "name": "mimo-web2api-sdk-tests",
   "private": true,
   "type": "module",
   "description": "Integration tests using the official OpenAI / Anthropic SDKs",
@@ -16,7 +16,7 @@
     "tool-precision": "node tool-precision.mjs",
     "long-session": "node long-session.mjs",
     "long-output": "node long-output.mjs",
-    "all": "npm run edges && npm run concurrency && npm run protocol && npm run images && npm run stability && npm run anthropic && npm run config",
+    "all": "npm run edges && npm run concurrency && npm run protocol && npm run images && npm run stability && npm run anthropic && npm run config && npm run extension",
     "image-multiturn": "node image-multiturn.mjs",
     "image-large": "node image-large.mjs",
     "tool-call-text": "node tool-call-text.mjs",

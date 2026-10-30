@@ -29,7 +29,7 @@ GW=http://localhost:8090 npm run stability
 
 | 命令 | 覆盖 |
 |---|---|
-| `npm run all` | 依次跑下面 7 套（约 25 分钟） |
+| `npm run all` | 依次跑下面 8 套（约 25 分钟） |
 | `npm run edges` | 请求校验与错误码、Unicode 保真、长输入截断、流式事件顺序、多工具调用、会话隔离 |
 | `npm run concurrency` | 8 路并发、并发下的会话隔离、10 轮串行上下文、流式与非流式混合负载 |
 | `npm run protocol` | 流式协议合规：同一流 id 一致、usage 块 `choices` 为空、`finish_reason` 不被覆盖、工具调用带 `index` |
@@ -37,6 +37,7 @@ GW=http://localhost:8090 npm run stability
 | `npm run stability` | 三模型 × 多轮上下文 / 多轮工具调用 / 长上下文 / 流式多轮 |
 | `npm run anthropic` | Anthropic 格式：基础 / 多轮 / tool_use / 工具结果回传 / 流式 |
 | `npm run config` | `default_model` 是否生效、Anthropic `system` 数组、多轮工具历史、管理接口 |
+| `npm run extension` | 浏览器扩展与管理接口的契约：请求体字段、同 `user_id` 幂等覆盖、缺字段 400、无鉴权 401；用 dummy 凭据，不消耗上游额度 |
 | `npm run anthropic-tools` | Anthropic 流式工具调用的事件序列与 SDK 解析 |
 | `npm run tools` | 工具调用可靠性（明确要求 / 隐含需要 / 命令三类场景） |
 | `npm run tool-precision` | 双向：该调工具时调、不该调时保持安静（防过度调用） |

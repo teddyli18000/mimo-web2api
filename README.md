@@ -1,6 +1,6 @@
 <div align="center">
 
-# MiMo Web Proxy
+# MiMo Web2API
 
 **将小米 MiMo AI Studio 网页端反代为 OpenAI / Anthropic 兼容 API**
 
@@ -18,12 +18,12 @@ A local gateway that reverse-proxies [aistudio.xiaomimimo.com](https://aistudio.
 
 **Quick start**
 
-1. Download the build for your platform from [Releases](https://github.com/teddyli18000/mimo-web-proxy/releases) — Windows `.zip`, macOS `.dmg`, or Linux `.tar.gz`.
+1. Download the build for your platform from [Releases](https://github.com/teddyli18000/mimo-web2api/releases) — Windows `.zip`, macOS `.dmg`, or Linux `.tar.gz`.
 2. Run it. On first start it creates `config.json` and `data/`, then opens the panel at `http://localhost:8080`.
-3. Paste your MiMo cookie into the panel (see [获取 MiMo Cookie](#获取-mimo-cookie)), save.
+3. Paste your MiMo cookie into the panel (see [获取 MiMo Cookie](#获取-mimo-cookie)), save. The bundled browser extension does this in one click.
 4. Point your client at `http://localhost:8080/v1` with API key `sk-mimo`.
 
-**Features** — session reuse (incremental turns, so long agent sessions stay well under upstream length limits), tool calling for both API formats, thinking-content filtering, multi-account rotation, usage dashboard, zero third-party telemetry.
+**Features** — session reuse (incremental turns, so long agent sessions stay well under upstream length limits), tool calling for both API formats, thinking-content filtering, multi-account rotation, one-click login sync via the bundled browser extension, usage dashboard, zero third-party telemetry.
 
 > ⚠️ Runs on your own account cookie. Personal study and research only. No SLA — the upstream protocol can change at any time.
 
@@ -39,23 +39,25 @@ A local gateway that reverse-proxies [aistudio.xiaomimimo.com](https://aistudio.
 
 ### 下载即用（三平台）
 
-从 [Releases](https://github.com/teddyli18000/mimo-web-proxy/releases) 下载对应平台的文件：
+从 [Releases](https://github.com/teddyli18000/mimo-web2api/releases) 下载对应平台的文件：
 
 | 平台 | 文件 | 运行方式 |
 |---|---|---|
-| **Windows 10/11 (x64)** | `mimo-web-proxy-windows-amd64.zip` | 解压后双击 `mimo-web-proxy.exe` |
-| **macOS (Apple Silicon)** | `mimo-web-proxy-macos-arm64.dmg` | 打开 dmg，把 App 拖进「应用程序」，双击运行 |
-| **macOS (Intel)** | `mimo-web-proxy-macos-amd64.dmg` | 同上 |
-| **Linux (x64)** | `mimo-web-proxy-linux-amd64.tar.gz` | 解压后 `chmod +x mimo-web-proxy && ./mimo-web-proxy` |
+| **Windows 10/11 (x64)** | `mimo-web2api-windows-amd64.zip` | 解压后双击 `mimo-web2api.exe` |
+| **macOS (Apple Silicon)** | `mimo-web2api-macos-arm64.dmg` | 打开 dmg，把 App 拖进「应用程序」，双击运行 |
+| **macOS (Intel)** | `mimo-web2api-macos-amd64.dmg` | 同上 |
+| **Linux (x64)** | `mimo-web2api-linux-amd64.tar.gz` | 解压后 `chmod +x mimo-web2api && ./mimo-web2api` |
 
 程序是**自包含**的：不需要安装、不需要 Node、不需要 Go、不需要预先建配置文件。首次启动自动创建 `config.json` 与 `data/`，并打开面板 `http://localhost:8080`。
+
+发行资产里还有一个 `mimo-web2api-extension-<版本>.zip`——浏览器扩展，用来一键把登录态同步进账号池，安装见[获取 MiMo Cookie](#获取-mimo-cookie)。
 
 **配置与数据位置**（首次启动自动创建）：
 
 | 平台 | 位置 |
 |---|---|
 | Windows | exe 同目录 |
-| macOS | `~/Library/Application Support/mimo-web-proxy/`（`.app` 内不写文件，避免破坏签名） |
+| macOS | `~/Library/Application Support/mimo-web2api/`（`.app` 内不写文件，避免破坏签名） |
 | Linux | 二进制同目录 |
 
 > 💡 想换端口或 API Key？改面板「配置」页保存，或直接编辑 `config.json`。想禁止自动开浏览器，设环境变量 `NO_BROWSER_OPEN=1`。
@@ -65,7 +67,7 @@ A local gateway that reverse-proxies [aistudio.xiaomimimo.com](https://aistudio.
 本版本未做代码签名与公证（需要 Apple 开发者账号），Gatekeeper 会提示"无法验证开发者"。**右键点击 App → 打开 → 在弹窗里再点"打开"**，或执行一次：
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/MiMo Web Proxy.app"
+xattr -dr com.apple.quarantine "/Applications/MiMo Web2API.app"
 ```
 
 ### Linux 依赖
@@ -75,18 +77,18 @@ xattr -dr com.apple.quarantine "/Applications/MiMo Web Proxy.app"
 ### 从源码编译
 
 ```bash
-git clone https://github.com/teddyli18000/mimo-web-proxy.git
-cd mimo-web-proxy
+git clone https://github.com/teddyli18000/mimo-web2api.git
+cd mimo-web2api
 
 # 编译前端（Node 18+）—— static/ 未入库，必须先构建
 cd web && npm install && npm run build && cd ..
 
 # 编译后端（Go 1.22+）
-go build -o mimo-web-proxy.exe .     # Windows
-go build -o mimo-web-proxy .         # macOS / Linux
+go build -o mimo-web2api.exe .     # Windows
+go build -o mimo-web2api .         # macOS / Linux
 
 # 交叉编译示例
-GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o mimo-web-proxy-mac .
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o mimo-web2api-mac .
 ```
 
 ### 自动构建
@@ -98,6 +100,28 @@ git tag v1.3.3 && git push origin v1.3.3
 ```
 
 ## 获取 MiMo Cookie
+
+网关需要小米账号的三项登录态，对应 Cookie 里的 `serviceToken`、`userId`、`xiaomichatbot_ph`。两种填法任选其一。
+
+### 方式一：浏览器扩展（推荐）
+
+每个 [Release](https://github.com/teddyli18000/mimo-web2api/releases) 除软件本体外，还附带 `mimo-web2api-extension-<版本>.zip`：
+
+1. 下载并**解压**（Chrome 不能直接装压缩包，必须先解压成目录）
+2. 打开 `chrome://extensions`，右上角开启「开发者模式」
+3. 点「加载已解压的扩展程序」，选中解压出来的 `mimo-web2api-extension` 目录
+4. 先在 https://aistudio.xiaomimimo.com 登录并随便发一条消息（Cookie 要发过消息才齐）
+5. 点工具栏上的扩展图标，确认网关地址（默认 `http://localhost:8080`）与 API Key（默认 `sk-mimo`），点「同步 Cookie 到 Gateway」
+6. 切回管理面板，账号已经在「账号池」里
+
+同一账号（同 `user_id`）重复同步只会更新凭据，不会新增账号，账号 ID 也保持不变。三个值缺任何一个时扩展会直接报出缺哪一项，不会写入残缺账号。
+
+限制：
+
+- 扩展只读取浏览器里 `xiaomimimo.com` / `xiaomi.com` 的 Cookie，只把结果 POST 到你填的本机地址（仅允许 `localhost` / `127.0.0.1`），没有任何第三方外联
+- 未上商店、未签名，加载后 Chrome 会常驻「请停用以开发者模式运行的扩展程序」提示；扩展也不会自动更新，新版需要重新下载解压（账号不会丢，凭据在 `config.json` 里）
+
+### 方式二：手动从 DevTools 取
 
 1. 浏览器访问 **https://aistudio.xiaomimimo.com** 并用小米账号登录
 2. 在对话框随便发一条消息
@@ -111,7 +135,7 @@ git tag v1.3.3 && git push origin v1.3.3
 | `user_id` | `userId` | `3215624450......`（纯数字） |
 | `ph` | `xiaomichatbot_ph` | `0Fjou2NP2l54M8SRzvNO/g==......` |
 
-6. 填入管理面板「配置 → 账号池 → 添加」，或直接编辑 `config.json`：
+6. 填入管理面板「配置 → 账号池 → 添加」（四项均为必填），或直接编辑 `config.json`：
 
 ```json
 {
@@ -127,7 +151,7 @@ git tag v1.3.3 && git push origin v1.3.3
 }
 ```
 
-> 💡 也可以用 `browser-extension/` 目录里的浏览器扩展一键抓取（只发往你本机网关）。
+> `id` 是自己起的本地标识，不需要从任何地方获取；多账号时保持唯一即可。
 > Cookie 有有效期，过期后面板健康检查会显示异常，重新抓一次即可。
 
 ## 接入客户端
@@ -199,6 +223,7 @@ curl http://localhost:8080/v1/messages \
 - 🔁 **会话复用（增量发送）** — 首轮发完整上下文，后续轮次只发新消息，依赖上游服务端上下文。与网页端行为一致：实测 12 轮 agent 会话平均 query 仅 240 字符（全量重放需 70K+），长任务不再撞长度限制
 - 🧠 **思考内容自动过滤** — thinking 段不会漏进正文
 - 👥 **多账号轮转** — 配多个账号自动分担负载
+- 🧩 **浏览器扩展** — 一键把浏览器里的登录态同步进账号池；同 `user_id` 重复同步只更新，不新增
 - 📊 **管理面板** — 用量统计、模型分布、账号管理、健康检查
 - 🔒 **无第三方遥测** — 面板与扩展零外联，凭证只存本机 `config.json`
 - ⚡ **单二进制** — Go 编译，前端内嵌，双击即用
@@ -236,7 +261,8 @@ curl http://localhost:8080/v1/messages \
 |---|---|
 | `GET /admin/api/config` | 读取配置 |
 | `POST /admin/api/config` | 更新默认模型 |
-| `POST/DELETE /admin/api/accounts` | 增删账号 |
+| `POST /admin/api/accounts` | 新增或更新账号（四项必填；同 `user_id` 覆盖，返回 `{status: added\|updated, id}`） |
+| `DELETE /admin/api/accounts` | 按 `id` 删除账号 |
 | `GET /admin/api/health` | 账号健康检查 |
 | `GET /admin/api/stats` | 用量统计 |
 
@@ -244,12 +270,33 @@ curl http://localhost:8080/v1/messages \
 
 ## 测试
 
-仓库内 [`test/sdk/`](test/sdk/README.md) 是用**官方 SDK**（`openai`、`@anthropic-ai/sdk`）对真实上游跑的集成测试——用与真实客户端相同的协议栈验证，能发现手写 HTTP 断言测不出的协议层问题。
+分三层，详见 [`test/README.md`](test/README.md)：
+
+| 层 | 内容 | 需要真实账号 |
+|---|---|---|
+| 单元 | `go test ./...` | 否 |
+| 契约 / E2E | 真实网关二进制 + 本地假上游（`test/harness/fake-upstream.mjs`），覆盖管理接口、OpenAI / Anthropic、会话复用、图片、工具调用、通道选择、重试 | 否 |
+| 浏览器 | 真 Chromium 加载真扩展，点弹窗把 cookie 同步进真网关（Playwright + xvfb） | 否（注入 dummy cookie） |
+| 真实上游 | [`test/sdk/`](test/sdk/README.md) 的 19 个脚本，用官方 SDK 打真实上游 | 是 |
+
+本地跑内部测试：
+
+```bash
+cd web && npm ci && npm run build && cd ..   # static/ 不入库
+go build -o mimo-web2api .
+
+node test/run.mjs --tag offline   # 管理接口契约
+node test/run.mjs --tag e2e       # 全链路（假上游）
+```
+
+CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）在 **Linux / Windows / macOS(arm64) / macOS(x64)** 四平台各跑一遍：`test`（go vet + go test + 契约 + 全链路）、`extension`（打包校验）、`browser`（真 Chromium 加载真扩展）。**不引用任何 secrets**、不访问真实上游，全程 dummy 凭据；报告以 JUnit 形式上传。
+
+真实上游那批要自己的账号，且一次全跑约 25 分钟，只在本地用：
 
 ```bash
 cd test/sdk && npm install
 
-npm run all           # 依次跑下面 7 套（约 25 分钟）
+npm run all           # 依次跑下面 8 套（约 25 分钟）
 npm run edges         # 请求校验 / Unicode / 长输入截断 / 流式事件顺序 / 会话隔离
 npm run concurrency   # 并发与会话隔离
 npm run protocol      # 流式协议合规（id 一致、usage 块、finish_reason、tool_calls index）
@@ -257,12 +304,11 @@ npm run images        # 图片端到端（三模型识图、缓存、Anthropic �
 npm run stability     # 三模型 × 多轮上下文 / 工具调用 / 长上下文 / 流式
 npm run anthropic     # Anthropic 格式：基础 / 多轮 / tool_use / 流式
 npm run config        # default_model、system 数组、多轮工具历史、管理接口
+npm run extension     # 浏览器扩展与管理接口的契约（幂等覆盖、缺字段 400、无鉴权拒绝）
 ```
 
 其余套件（`tools`、`tool-precision`、`long-session`、`long-output`、`anthropic-tools`）见
 [`test/sdk/README.md`](test/sdk/README.md)。
-
-Go 单元测试：`go test ./...`
 
 ## 安全说明
 

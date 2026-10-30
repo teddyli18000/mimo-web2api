@@ -4,8 +4,8 @@ import (
 	"context"
 	"log"
 
-	"github.com/teddyli18000/mimo-web-proxy/internal/adapter"
-	"github.com/teddyli18000/mimo-web-proxy/internal/mimo"
+	"github.com/teddyli18000/mimo-web2api/internal/adapter"
+	"github.com/teddyli18000/mimo-web2api/internal/mimo"
 )
 
 // 上游没有 OpenAI 那种 image_url 字段，图片必须先传到它的资源接口、拿到资源 id，

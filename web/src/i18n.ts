@@ -6,7 +6,7 @@ export const translations = {
     version: '版本',
     // Dashboard
     dashboardTitle: '仪表盘',
-    dashboardSubtitle: 'MiMo Web Proxy 实时统计',
+    dashboardSubtitle: 'MiMo Web2API 实时统计',
     totalRequests: '总请求数',
     totalTokens: '总 Token',
     cacheHitRate: '缓存命中率',
@@ -49,7 +49,7 @@ export const translations = {
     config: 'Config',
     version: 'Version',
     dashboardTitle: 'Dashboard',
-    dashboardSubtitle: 'MiMo Web Proxy Real-time Stats',
+    dashboardSubtitle: 'MiMo Web2API Real-time Stats',
     totalRequests: 'Total Requests',
     totalTokens: 'Total Tokens',
     cacheHitRate: 'Cache Hit Rate',

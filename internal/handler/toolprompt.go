@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/teddyli18000/mimo-web-proxy/internal/adapter"
+	"github.com/teddyli18000/mimo-web2api/internal/adapter"
 )
 
 // buildToolPrompt builds a concise tool description string from OpenAI tool definitions.

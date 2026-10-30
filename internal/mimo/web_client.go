@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -19,8 +20,8 @@ import (
 )
 
 const (
-	webBaseURL = "https://aistudio.xiaomimimo.com"
-	chatAPI    = "/open-apis/bot/chat"
+	defaultWebBaseURL = "https://aistudio.xiaomimimo.com"
+	chatAPI           = "/open-apis/bot/chat"
 	// ultraspeed 型号走独立的 fastchat 通道（2026-09 用户真实抓包证实；
 	// 在 open-apis 通道发送该型号会返回"模型名称错误"）
 	ultraChatAPI    = "/fastchat/open-apis/bot/chat"
@@ -32,6 +33,40 @@ const (
 	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
 	secChUA   = "\"Google Chrome\";v=\"153\", \"Chromium\";v=\"153\", \"Not)A;Brand\";v=\"24\""
 )
+
+// webBaseURL 默认指向真实上游。E2E 用 MIMO_TEST_WEB_BASE_URL 指向本地假上游：
+// 这样全链路测试既不需要真实 Cookie，也不会真的打到小米服务器。
+// 进程启动时读一次 —— 生命周期内 base 不变，避免并发请求读到半切换状态。
+var webBaseURL = resolveWebBaseURL()
+
+// resolveWebBaseURL 解析测试用的上游覆盖。
+//
+// 这个变量会让 serviceToken / ph 一并发往目标主机，所以只接受带 scheme 的
+// http(s) 地址；指向非回环地址时打一条醒目告警，避免有人把它当普通配置项乱填。
+// 缺 scheme（如 127.0.0.1:9000）直接忽略 —— 否则会拼出非法 URL，报错还很难查。
+func resolveWebBaseURL() string {
+	raw := strings.TrimSpace(os.Getenv("MIMO_TEST_WEB_BASE_URL"))
+	if raw == "" {
+		return defaultWebBaseURL
+	}
+	u, err := url.Parse(strings.TrimRight(raw, "/"))
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		log.Printf("[mimo] ignoring invalid MIMO_TEST_WEB_BASE_URL=%q, using %s", raw, defaultWebBaseURL)
+		return defaultWebBaseURL
+	}
+	if !isLoopbackHost(u.Hostname()) {
+		log.Printf("[mimo] WARNING: upstream overridden to %s — account cookies will be sent there", u.String())
+	}
+	return u.String()
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 // setBrowserHeaders 注入完整的浏览器请求头（Chat / Save / Validate 共用）
 //

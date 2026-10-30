@@ -33,7 +33,7 @@ export function ConfigPanel() {
   const [newPh, setNewPh] = useState('')
   const [adding, setAdding] = useState(false)
 
-  const loadConfig = () => {
+  const loadConfig = (silent = false) => {
     apiFetch('/admin/api/config')
       .then(r => {
         if (!r.ok) throw new Error(String(r.status))
@@ -44,7 +44,8 @@ export function ConfigPanel() {
         setAccounts(cfg.accounts || [])
       })
       .catch(err => {
-        if (err?.message === '401') {
+        // 焦点重载是后台行为，没填 Key 时不该每次切回页面都弹一次
+        if (err?.message === '401' && !silent) {
           alert(lang === 'zh'
             ? '鉴权失败：请在下方 API Key 框填入密钥（默认 sk-mimo）后点「保存配置」'
             : 'Unauthorized: fill in the API Key below (default sk-mimo) and click Save Config')
@@ -54,6 +55,20 @@ export function ConfigPanel() {
   }
 
   useEffect(() => { loadConfig() }, [])
+
+  // 扩展在另一个窗口里同步账号，这边收不到任何推送。
+  // 页面重新可见 / 窗口获得焦点时重拉一次配置：成本为零，也不用引入轮询或长连接。
+  useEffect(() => {
+    const reload = () => {
+      if (document.visibilityState === 'visible') loadConfig(true)
+    }
+    document.addEventListener('visibilitychange', reload)
+    window.addEventListener('focus', reload)
+    return () => {
+      document.removeEventListener('visibilitychange', reload)
+      window.removeEventListener('focus', reload)
+    }
+  }, [lang])
 
   const handleSave = async () => {
     setSaving(true)
@@ -72,8 +87,12 @@ export function ConfigPanel() {
     }
   }
 
+  // 网关调上游需要四项：buildCookie 用 user_id / service_token / ph，
+  // 保存会话还要把 ph 拼进 query。缺一项存进去也只是个调不通的空壳。
+  const canAdd = [newId, newToken, newUserId, newPh].every(v => v.trim() !== '')
+
   const handleAdd = async () => {
-    if (!newId.trim() || !newToken.trim()) return
+    if (!canAdd) return
     setAdding(true)
     try {
       const res = await apiFetch('/admin/api/accounts', {
@@ -227,6 +246,12 @@ export function ConfigPanel() {
           </div>
         </div>
 
+        <p className={`text-xs leading-relaxed ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+          {lang === 'zh'
+            ? '浏览器扩展同步过来的账号会出现在这里；同一账号重复同步只更新，不会重复添加。'
+            : 'Accounts synced from the browser extension show up here; re-syncing the same account updates it in place.'}
+        </p>
+
         {/* Add Form */}
         <AnimatePresence>
           {showAdd && (
@@ -237,17 +262,20 @@ export function ConfigPanel() {
               className="overflow-hidden"
             >
               <div className={`p-4 rounded-xl border space-y-3 ${isDark ? 'bg-white/[0.02] border-purple-500/20' : 'bg-blue-50/50 border-blue-200'}`}>
+                <p className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
+                  {lang === 'zh' ? '四项均为必填，缺一项都无法调用上游。' : 'All four fields are required.'}
+                </p>
                 <div className="grid grid-cols-2 gap-3">
-                  <input type="text" placeholder="Account ID (唯一标识)" value={newId} onChange={e => setNewId(e.target.value)} className={inputClass} />
-                  <input type="text" placeholder="user_id" value={newUserId} onChange={e => setNewUserId(e.target.value)} className={inputClass} />
+                  <input type="text" placeholder="Account ID（必填，唯一标识）" value={newId} onChange={e => setNewId(e.target.value)} className={inputClass} />
+                  <input type="text" placeholder="user_id（必填）" value={newUserId} onChange={e => setNewUserId(e.target.value)} className={inputClass} />
                 </div>
-                <input type="password" placeholder="service_token (Cookie中的完整值)" value={newToken} onChange={e => setNewToken(e.target.value)} className={inputClass} />
-                <input type="text" placeholder="xiaomichatbot_ph" value={newPh} onChange={e => setNewPh(e.target.value)} className={inputClass} />
+                <input type="password" placeholder="service_token（必填，Cookie 中的完整值）" value={newToken} onChange={e => setNewToken(e.target.value)} className={inputClass} />
+                <input type="text" placeholder="xiaomichatbot_ph（必填）" value={newPh} onChange={e => setNewPh(e.target.value)} className={inputClass} />
                 <div className="flex gap-2 justify-end">
                   <button onClick={() => setShowAdd(false)} className={`px-4 py-2 rounded-lg text-sm ${isDark ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700'} transition-colors`}>
                     {lang === 'zh' ? '取消' : 'Cancel'}
                   </button>
-                  <motion.button onClick={handleAdd} disabled={adding || !newId.trim() || !newToken.trim()}
+                  <motion.button onClick={handleAdd} disabled={adding || !canAdd}
                     className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-indigo-500 text-white rounded-lg text-sm disabled:opacity-50"
                     whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
                     {adding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}

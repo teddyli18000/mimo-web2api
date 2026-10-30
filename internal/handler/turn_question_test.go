@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/teddyli18000/mimo-web-proxy/internal/adapter"
+	"github.com/teddyli18000/mimo-web2api/internal/adapter"
 )
 
 func msg(role, text string) adapter.OpenAIMessage {

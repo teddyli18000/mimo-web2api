@@ -13,14 +13,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/teddyli18000/mimo-web-proxy/internal/adapter"
-	"github.com/teddyli18000/mimo-web-proxy/internal/config"
-	"github.com/teddyli18000/mimo-web-proxy/internal/convstore"
-	"github.com/teddyli18000/mimo-web-proxy/internal/mimo"
-	"github.com/teddyli18000/mimo-web-proxy/internal/pool"
-	"github.com/teddyli18000/mimo-web-proxy/internal/router"
-	"github.com/teddyli18000/mimo-web-proxy/internal/stats"
-	"github.com/teddyli18000/mimo-web-proxy/internal/toolcall"
+	"github.com/teddyli18000/mimo-web2api/internal/adapter"
+	"github.com/teddyli18000/mimo-web2api/internal/config"
+	"github.com/teddyli18000/mimo-web2api/internal/convstore"
+	"github.com/teddyli18000/mimo-web2api/internal/mimo"
+	"github.com/teddyli18000/mimo-web2api/internal/pool"
+	"github.com/teddyli18000/mimo-web2api/internal/router"
+	"github.com/teddyli18000/mimo-web2api/internal/stats"
+	"github.com/teddyli18000/mimo-web2api/internal/toolcall"
 )
 
 type ChatHandler struct {

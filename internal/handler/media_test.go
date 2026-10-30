@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/teddyli18000/mimo-web-proxy/internal/adapter"
-	"github.com/teddyli18000/mimo-web-proxy/internal/mimo"
+	"github.com/teddyli18000/mimo-web2api/internal/adapter"
+	"github.com/teddyli18000/mimo-web2api/internal/mimo"
 )
 
 func TestCollectImagesOpenAI(t *testing.T) {

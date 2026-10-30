@@ -44,6 +44,8 @@ body {
   outline: none;
 }
 .field input:focus { border-color: #a855f7; }
+.hint { font-size: 11px; line-height: 1.5; color: #666; margin-top: -4px; }
+.hint + .field { margin-top: 12px; }
 .btn {
   width: 100%;
   padding: 10px;
@@ -91,18 +93,23 @@ body {
 <body>
   <div class="logo">
     <div class="logo-icon">⚡</div>
-    <div class="logo-text">MiMo Free API Helper</div>
+    <div class="logo-text">MiMo Web2API Helper</div>
   </div>
 
   <div class="field">
     <label>Gateway 地址</label>
     <input id="gateway" type="text" value="http://localhost:8080" />
+    <p class="hint">仅支持本机 localhost / 127.0.0.1</p>
   </div>
 
   <div class="field">
     <label>Gateway API Key</label>
     <input id="apikey" type="password" value="sk-mimo" />
   </div>
+
+  <p class="hint" style="margin-bottom:10px">
+    需先在 aistudio.xiaomimimo.com 登录并发送一条消息。同一账号重复同步只更新，不会新增账号。
+  </p>
 
   <button class="btn btn-primary" id="syncBtn">🔄 同步 Cookie 到 Gateway</button>
 

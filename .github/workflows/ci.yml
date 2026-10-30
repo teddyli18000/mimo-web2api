@@ -1,0 +1,170 @@
+name: CI
+
+# 全平台测试：Linux / Windows / macOS(arm64) / macOS(x64) 各跑一遍同样的内部测试。
+# 测试是「纯内部」的：真网关二进制 + 本地假上游，全程 dummy 凭据，
+# 不引用任何 secrets，也不访问真实小米服务器。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-amd64
+          - os: windows-latest
+            name: windows-amd64
+          # macos-latest 是 arm64；Intel 必须显式用 -intel 镜像（macos-13 已退役）
+          - os: macos-15-intel
+            name: macos-amd64
+          - os: macos-latest
+            name: macos-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # static/ 未入库（.gitignore 排除），go:embed 需要它，所以先构建前端
+      - name: Build frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Build binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          OUT=dist/mimo-web2api
+          if [ "$RUNNER_OS" = "Windows" ]; then OUT="$OUT.exe"; fi
+          go build -trimpath -ldflags "-s -w" -o "$OUT" .
+          echo "MIMO_BIN=$OUT" >> "$GITHUB_ENV"
+
+      # 契约 + 全链路（假上游）。suite 之间可以并发，每个 suite 自带网关与假上游。
+      - name: Contract + E2E suites
+        shell: bash
+        run: |
+          node test/run.mjs --tag offline --report-dir test-results
+          node test/run.mjs --tag e2e --concurrency 2 --report-dir test-results
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-${{ matrix.name }}
+          path: test-results
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gw-${{ matrix.name }}
+          path: dist/*
+          retention-days: 7
+
+  extension:
+    name: Extension package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax check popup
+        run: node --check browser-extension/popup.js
+
+      # 与 release 用同一个脚本，提前暴露「解压后目录结构不对」「版本没注入」这类问题
+      - name: Package and validate (dry run)
+        run: bash .github/pack-extension.sh 0.0.0 dist-ext
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-dry-run
+          path: dist-ext/*.zip
+          retention-days: 7
+
+  browser:
+    name: Extension E2E (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-amd64
+          - os: windows-latest
+            name: windows-amd64
+          - os: macos-15-intel
+            name: macos-amd64
+          - os: macos-latest
+            name: macos-arm64
+    runs-on: ${{ matrix.os }}
+    needs: test
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 只有这个 job 需要 Playwright。channel 'chromium' + headless 才能三平台都加载扩展。
+      - name: Install Playwright Chromium
+        working-directory: test
+        shell: bash
+        run: |
+          npm install --no-audit --no-fund
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            npx playwright install --with-deps chromium
+          else
+            npx playwright install chromium
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gw-${{ matrix.name }}
+          path: bin
+
+      - name: Resolve binary
+        shell: bash
+        run: |
+          BIN=bin/mimo-web2api
+          if [ -f "$BIN.exe" ]; then BIN="$BIN.exe"; fi
+          chmod +x "$BIN" 2>/dev/null || true
+          echo "MIMO_BIN=$BIN" >> "$GITHUB_ENV"
+
+      # 真 Chromium 加载真扩展 → 点弹窗 → cookie 进真网关 → 账号池可见 → 再点一次只更新
+      - name: Run browser suite
+        run: node test/run.mjs --tag browser --report-dir test-results
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-browser-${{ matrix.name }}
+          path: test-results

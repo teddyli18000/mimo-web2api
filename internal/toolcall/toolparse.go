@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/teddyli18000/mimo-web-proxy/internal/adapter"
+	"github.com/teddyli18000/mimo-web2api/internal/adapter"
 )
 
 type ParsedToolCall struct {

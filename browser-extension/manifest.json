@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "MiMo Web Proxy Helper",
-  "version": "1.1.0",
-  "description": "一键将 MiMo 登录态同步到本机 MiMo Web Proxy 网关（只发往你自己配置的网关地址）",
+  "name": "MiMo Web2API Helper",
+  "version": "1.2.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoi+MYo0zCZjK2g3jGkEpci7onaImc9N8oskTYFJaysijMkd23Uz4XmzghxZjo1+KfsbA8+Ql+bYlNsncJyPjF+3SlRFDhx3pRSm1bIQIM12l92c8G9KWCZD9RSfIZbqiQR2u8Z2ZBO01ooBfy6EinYMsAx6EZASXu7Fe7Sk4aZ6PP9Xkajl3kp/j/Om0RWgCVKlMN90vJnDHV7LfkV55QSp9tvMbTO/0YoLq9AstIPIeUGJ70X6RL1HgAIkWPbPpBu7iU+DhLgvmFcqRDGVKtrDTbbCwP8CzTS/ZHPLyuOnyfssqYkbeq1d+15Bj5ymL7ESJlv5grvoWPh8iWDe/zQIDAQAB",
+  "description": "一键将 MiMo 登录态同步到本机 MiMo Web2API 网关；同一账号重复同步只更新，不新增",
   "permissions": [
     "cookies"
   ],
@@ -12,7 +13,19 @@
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   }
 }

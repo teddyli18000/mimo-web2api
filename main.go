@@ -18,11 +18,11 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
-	"github.com/teddyli18000/mimo-web-proxy/internal/config"
-	"github.com/teddyli18000/mimo-web-proxy/internal/convstore"
-	"github.com/teddyli18000/mimo-web-proxy/internal/handler"
-	"github.com/teddyli18000/mimo-web-proxy/internal/pool"
-	"github.com/teddyli18000/mimo-web-proxy/internal/stats"
+	"github.com/teddyli18000/mimo-web2api/internal/config"
+	"github.com/teddyli18000/mimo-web2api/internal/convstore"
+	"github.com/teddyli18000/mimo-web2api/internal/handler"
+	"github.com/teddyli18000/mimo-web2api/internal/pool"
+	"github.com/teddyli18000/mimo-web2api/internal/stats"
 )
 
 //go:embed static/*
@@ -147,7 +147,7 @@ func main() {
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	panelURL := fmt.Sprintf("http://localhost%s", addr)
-	log.Printf("🚀 MiMo Web Proxy starting on %s", panelURL)
+	log.Printf("🚀 MiMo Web2API starting on %s", panelURL)
 	log.Printf("   Accounts: %d, API Key: see config.json", accountPool.Count())
 
 	// 双击运行：启动后自动打开管理面板（设置 NO_BROWSER_OPEN=1 关闭）
@@ -172,7 +172,7 @@ func main() {
 // 默认跟随可执行文件所在目录（双击/直接运行时不散落文件）。
 // 例外：macOS 的 .app bundle 里 exe 位于 Foo.app/Contents/MacOS/，
 // 往 bundle 内写配置会破坏代码签名、装到 /Applications 时可能无写权限、
-// 升级即丢配置，因此改用 ~/Library/Application Support/mimo-web-proxy。
+// 升级即丢配置，因此改用 ~/Library/Application Support/mimo-web2api。
 func resolveBaseDir() string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -181,7 +181,7 @@ func resolveBaseDir() string {
 	dir := filepath.Dir(exe)
 	if runtime.GOOS == "darwin" && strings.Contains(exe, ".app/Contents/MacOS/") {
 		if home, err := os.UserHomeDir(); err == nil {
-			appDir := filepath.Join(home, "Library", "Application Support", "mimo-web-proxy")
+			appDir := filepath.Join(home, "Library", "Application Support", "mimo-web2api")
 			if err := os.MkdirAll(appDir, 0755); err == nil {
 				return appDir
 			}

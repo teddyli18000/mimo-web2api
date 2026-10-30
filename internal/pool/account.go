@@ -6,8 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/teddyli18000/mimo-web-proxy/internal/config"
-	"github.com/teddyli18000/mimo-web-proxy/internal/mimo"
+	"github.com/teddyli18000/mimo-web2api/internal/config"
+	"github.com/teddyli18000/mimo-web2api/internal/mimo"
 )
 
 type Pool struct {

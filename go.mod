@@ -1,4 +1,4 @@
-module github.com/teddyli18000/mimo-web-proxy
+module github.com/teddyli18000/mimo-web2api
 
 go 1.22.0
 
