@@ -93,7 +93,7 @@ GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o mimo-web2api-mac .
 
 ### 自动构建
 
-打 tag 即触发 [GitHub Actions](.github/workflows/release.yml)：三平台并行构建 → 发布 pre-release。
+打 tag 即触发 [GitHub Actions](.github/workflows/release.yml)：四平台并行构建并用产物本身跑一遍内部测试 → 发布正式 Release（Latest）。
 
 ```bash
 git tag v1.3.3 && git push origin v1.3.3
