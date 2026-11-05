@@ -12,6 +12,25 @@ interface Account {
   active: boolean
 }
 
+// 从 curl / Cookie 字符串里抠出三项凭据。只做本地解析，不发任何请求。
+function parseCredentials(raw: string) {
+  const out: { service_token?: string; user_id?: string; ph?: string } = {}
+  const match = raw.match(/cookie:\s*([^'"]+)/i)
+  const cookieStr = match ? match[1] : raw
+  for (const part of cookieStr.split(';')) {
+    const idx = part.indexOf('=')
+    if (idx <= 0) continue
+    const name = part.slice(0, idx).trim()
+    const value = part.slice(idx + 1).trim()
+    if (!name || !value) continue
+    const lower = name.toLowerCase()
+    if (lower.includes('servicetoken') && !out.service_token) out.service_token = value
+    else if ((lower === 'userid' || lower === 'cuserid') && !out.user_id) out.user_id = value
+    else if ((lower.endsWith('_ph') || lower === 'ph') && !out.ph) out.ph = value
+  }
+  return out
+}
+
 export function ConfigPanel() {
   const { t, resolvedTheme, lang } = useSettings()
   const isDark = resolvedTheme === 'dark'
@@ -32,6 +51,7 @@ export function ConfigPanel() {
   const [newUserId, setNewUserId] = useState('')
   const [newPh, setNewPh] = useState('')
   const [adding, setAdding] = useState(false)
+  const [importText, setImportText] = useState('')
 
   const loadConfig = (silent = false) => {
     apiFetch('/admin/api/config')
@@ -90,6 +110,18 @@ export function ConfigPanel() {
   // 网关调上游需要四项：buildCookie 用 user_id / service_token / ph，
   // 保存会话还要把 ph 拼进 query。缺一项存进去也只是个调不通的空壳。
   const canAdd = [newId, newToken, newUserId, newPh].every(v => v.trim() !== '')
+
+  const handleImport = () => {
+    const parsed = parseCredentials(importText)
+    if (!parsed.service_token && !parsed.user_id && !parsed.ph) {
+      alert(lang === 'zh' ? '没解析出 Cookie，请粘贴完整的 curl 或 Cookie 字符串' : 'No cookie found in the pasted text')
+      return
+    }
+    if (parsed.service_token) setNewToken(parsed.service_token)
+    if (parsed.user_id) setNewUserId(parsed.user_id)
+    if (parsed.ph) setNewPh(parsed.ph)
+    setImportText('')
+  }
 
   const handleAdd = async () => {
     if (!canAdd) return
@@ -265,6 +297,21 @@ export function ConfigPanel() {
                 <p className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>
                   {lang === 'zh' ? '四项均为必填，缺一项都无法调用上游。' : 'All four fields are required.'}
                 </p>
+                <div className="flex gap-2">
+                  <textarea
+                    rows={2}
+                    placeholder={lang === 'zh'
+                      ? '可选：粘贴 curl 或 Cookie，自动解析出三项凭据'
+                      : 'Optional: paste a curl command or Cookie header'}
+                    value={importText}
+                    onChange={e => setImportText(e.target.value)}
+                    className={`${inputClass} flex-1 font-mono text-xs resize-none`}
+                  />
+                  <button onClick={handleImport}
+                    className={`px-3 rounded-lg text-sm whitespace-nowrap ${isDark ? 'bg-white/[0.06] text-gray-300 hover:bg-white/[0.1]' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}>
+                    {lang === 'zh' ? '解析并填入' : 'Parse'}
+                  </button>
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <input type="text" placeholder="Account ID（必填，唯一标识）" value={newId} onChange={e => setNewId(e.target.value)} className={inputClass} />
                   <input type="text" placeholder="user_id（必填）" value={newUserId} onChange={e => setNewUserId(e.target.value)} className={inputClass} />
