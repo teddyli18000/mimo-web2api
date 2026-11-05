@@ -28,44 +28,52 @@ document.addEventListener('DOMContentLoaded', () => {
     showStatus('loading', '🔍 正在搜索所有 Cookie...');
 
     try {
-      // 宽泛搜索：先列出所有域名的 cookie
       const allCookies = await chrome.cookies.getAll({});
-      const debug = [];
-      const mimoCookies = {};
+
+      // 小米的登录态横跨 xiaomimimo.com / xiaomi.com / mi.com：
+      // userId 常常只在 account.xiaomi.com，而 serviceToken / ph 在 MiMo 自己的域。
+      // 所以先按「cookie 名字」找，域名只用来挑优先级，别再靠域名关键词过滤。
+      const domainOk = d => /(^|\.)(xiaomimimo\.com|xiaomi\.com|mi\.com)$/i.test(d.replace(/^\./, ''));
+      const rank = d => (d.includes('mimo') ? 0 : d.includes('xiaomi') ? 1 : 2);
+
+      const picked = {};
+      const relevant = [];
+      const take = (key, value, domain) => {
+        if (!value) return;
+        if (!picked[key] || rank(domain) < rank(picked[key].domain)) picked[key] = { value, domain };
+      };
 
       for (const c of allCookies) {
-        const d = c.domain;
-        // 匹配所有小米/MiMo 相关域名
-        if (d.includes('mimo') || d.includes('xiaomi')) {
-          debug.push(`${d} | ${c.name} = ${c.value.slice(0, 30)}...`);
+        if (!domainOk(c.domain)) continue;
+        relevant.push(`${c.domain} | ${c.name} = ${c.value.slice(0, 30)}...`);
 
-          if (c.name.includes('serviceToken')) {
-            mimoCookies.serviceToken = c.value;
-          }
-          if (c.name === 'userId' || c.name === 'cUserId') {
-            if (!mimoCookies.userId) mimoCookies.userId = c.value;
-          }
-          if (c.name.includes('_ph')) {
-            mimoCookies.ph = c.value;
-          }
-        }
+        const n = c.name.toLowerCase();
+        if (n.includes('servicetoken') || n === 'service_token') take('serviceToken', c.value, c.domain);
+        if (n === 'userid' || n === 'cuserid') take('userId', c.value, c.domain);
+        if (n.endsWith('_ph') || n === 'ph') take('ph', c.value, c.domain);
       }
 
-      renderPreview(debug, mimoCookies);
+      const values = {
+        serviceToken: picked.serviceToken?.value,
+        userId: picked.userId?.value,
+        ph: picked.ph?.value,
+      };
 
-      if (debug.length === 0) {
-        showStatus('err', '❌ 未找到任何小米/MiMo Cookie。请先在 aistudio.xiaomimimo.com 登录。');
+      renderPreview(relevant, values, allCookies.map(c => `${c.domain} | ${c.name}`));
+
+      if (relevant.length === 0) {
+        showStatus('err', '❌ 没读到任何小米域 Cookie。请确认登录 aistudio.xiaomimimo.com 用的是当前浏览器配置；刚更新过扩展的话，先到 chrome://extensions 重新加载。');
         return;
       }
 
       // 三项都是网关调上游的必需品，缺一项写进去也只是个调不通的空壳。
       // 这里先拦下并点名缺哪个，不让它带着空字段发出去。
       const missing = [];
-      if (!mimoCookies.serviceToken) missing.push('service_token（serviceToken）');
-      if (!mimoCookies.userId) missing.push('user_id（userId）');
-      if (!mimoCookies.ph) missing.push('ph（xiaomichatbot_ph）');
+      if (!values.serviceToken) missing.push('service_token（serviceToken）');
+      if (!values.userId) missing.push('user_id（userId）');
+      if (!values.ph) missing.push('ph（xiaomichatbot_ph）');
       if (missing.length > 0) {
-        showStatus('err', `❌ Cookie 不完整，缺少 ${missing.join('、')}。请在 MiMo 对话框先发一条消息后重试。`);
+        showStatus('err', `❌ Cookie 不完整，缺少 ${missing.join('、')}。已读到 ${allCookies.length} 个 cookie，其中小米相关 ${relevant.length} 个；看下方列表确认登录态是否在同一个浏览器配置。`);
         return;
       }
 
@@ -81,9 +89,9 @@ document.addEventListener('DOMContentLoaded', () => {
         },
         body: JSON.stringify({
           id: `ext-${Date.now()}`,
-          service_token: mimoCookies.serviceToken,
-          user_id: mimoCookies.userId,
-          ph: mimoCookies.ph,
+          service_token: values.serviceToken,
+          user_id: values.userId,
+          ph: values.ph,
           active: true,
         }),
       });
@@ -138,16 +146,29 @@ document.addEventListener('DOMContentLoaded', () => {
     return '';
   }
 
-  function renderPreview(debug, mimoCookies) {
+  const escapeHtml = s => String(s).replace(/[&<>"']/g, m => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[m]));
+
+  function renderPreview(relevant, values, allNames) {
     const lines = [
-      `${mimoCookies.serviceToken ? '✅' : '❌'} serviceToken: ${mimoCookies.serviceToken ? mimoCookies.serviceToken.slice(0, 20) + '...' : 'NOT FOUND'}`,
-      `${mimoCookies.userId ? '✅' : '❌'} userId: ${mimoCookies.userId || 'NOT FOUND'}`,
-      `${mimoCookies.ph ? '✅' : '❌'} ph: ${mimoCookies.ph ? mimoCookies.ph.slice(0, 20) + '...' : 'NOT FOUND'}`,
+      `${values.serviceToken ? '✅' : '❌'} serviceToken: ${values.serviceToken ? values.serviceToken.slice(0, 20) + '...' : 'NOT FOUND'}`,
+      `${values.userId ? '✅' : '❌'} userId: ${values.userId || 'NOT FOUND'}`,
+      `${values.ph ? '✅' : '❌'} ph: ${values.ph ? values.ph.slice(0, 20) + '...' : 'NOT FOUND'}`,
     ];
+    const missing = !values.serviceToken || !values.userId || !values.ph;
+    // 缺字段时列出「全部可见 cookie」：用户截一张图就能看出登录态到底在哪个域、叫什么名字
+    const list = missing ? allNames : relevant;
+    const title = missing
+      ? `--- 浏览器可见 cookie（共 ${allNames.length} 个，前 40 条）---`
+      : '--- 小米相关 cookie ---';
+
     previewEl.innerHTML = lines.map(l => {
       const cls = l.startsWith('✅') ? 'cookie-ok' : 'cookie-miss';
-      return `<div class="${cls}">${l}</div>`;
-    }).join('') + `<div style="margin-top:6px;color:#555">--- 全部匹配 ---</div>` + debug.slice(0, 10).map(d => `<div style="color:#555">${d}</div>`).join('');
+      return `<div class="${cls}">${escapeHtml(l)}</div>`;
+    }).join('')
+      + `<div style="margin-top:6px;color:#555">${title}</div>`
+      + list.slice(0, 40).map(d => `<div style="color:#555">${escapeHtml(d)}</div>`).join('');
     previewEl.classList.add('show');
   }
 

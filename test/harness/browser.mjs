@@ -44,14 +44,17 @@ export async function launchWithExtension({ dir, headless = true } = {}) {
     // 扩展在 CI 里没有真实登录态，往它有 host 权限的域注入 dummy cookie。
     // 必须带 secure：host_permissions 是 https://*.xiaomimimo.com/*，
     // Chrome 只把 secure cookie 匹配给 https 权限，注入非 secure 的话扩展一个也看不到。
-    async setMiMoCookies({ serviceToken, userId, ph } = {}) {
+    async setMiMoCookies({ serviceToken, userId, ph, userIdDomain = 'aistudio.xiaomimimo.com' } = {}) {
       const cookies = [];
-      const url = 'https://aistudio.xiaomimimo.com/';
       // 用 url 就不能再给 path/domain —— Playwright 会报 "Cookie should have either url or path"
-      const base = { url, secure: true, sameSite: 'Lax' };
-      if (serviceToken) cookies.push({ ...base, name: 'serviceToken', value: serviceToken });
-      if (userId) cookies.push({ ...base, name: 'userId', value: userId });
-      if (ph) cookies.push({ ...base, name: 'xiaomichatbot_ph', value: ph });
+      const make = (domain, name, value) => ({
+        url: `https://${domain}/`, secure: true, sameSite: 'Lax', name, value,
+      });
+      // userId 常落在 account.xiaomi.com，和 serviceToken 不在同一个域；
+      // 这正是「只按域名过滤会漏」的场景，默认就用跨域注入来验证。
+      if (serviceToken) cookies.push(make('aistudio.xiaomimimo.com', 'serviceToken', serviceToken));
+      if (userId) cookies.push(make(userIdDomain, 'userId', userId));
+      if (ph) cookies.push(make('aistudio.xiaomimimo.com', 'xiaomichatbot_ph', ph));
       await context.addCookies(cookies);
     },
 

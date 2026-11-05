@@ -118,7 +118,7 @@ git tag v1.3.3 && git push origin v1.3.3
 
 限制：
 
-- 扩展只读取浏览器里 `xiaomimimo.com` / `xiaomi.com` 的 Cookie，只把结果 POST 到你填的本机地址（仅允许 `localhost` / `127.0.0.1`），没有任何第三方外联
+- 扩展只读取浏览器里 `xiaomimimo.com` / `xiaomi.com` / `mi.com` 的 Cookie（登录态分散在这几个域），只把结果 POST 到你填的本机地址（仅允许 `localhost` / `127.0.0.1`），没有任何第三方外联
 - 未上商店、未签名，加载后 Chrome 会常驻「请停用以开发者模式运行的扩展程序」提示；扩展也不会自动更新，新版需要重新下载解压（账号不会丢，凭据在 `config.json` 里）
 
 ### 方式二：手动从 DevTools 取

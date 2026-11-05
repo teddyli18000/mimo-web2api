@@ -49,6 +49,8 @@ export default defineSuite({
           serviceToken: 'dummy-service-token',
           userId: '1234567890',
           ph: 'dummy-ph==',
+          // userId 放在另一个域：模拟真实登录态跨 xiaomi.com / xiaomimimo.com 的情况
+          userIdDomain: 'account.xiaomi.com',
         });
         await openPopup();
 
