@@ -380,7 +380,7 @@ func (l *Logger) run() {
 					write(b)
 				default:
 					l.mu.Lock()
-					l.flushLocked()
+					l.closeLocked()
 					l.mu.Unlock()
 					return
 				}

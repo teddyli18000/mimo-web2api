@@ -5,13 +5,6 @@ import (
 	"unicode/utf8"
 )
 
-// markerGuardBytes 尾部保留窗口的字节数。
-//
-// 需要覆盖最长的工具标记（"tool_calls" 10 字节、"function=" 9 字节），
-// 并留出余量吸收上游把标记拆成多段、或一个 chunk 正好在标记中间结束的情况。
-// 窗口越大首字延迟越明显，32 字节是够用且几乎无感的取值。
-const markerGuardBytes = 32
-
 // MarkerGuard 在把上游正文增量转发给客户端时，扣押末尾一小段文本。
 //
 // 上游返回的是「约定格式的纯文本」，工具调用要靠 HasToolCallSyntax /
@@ -22,20 +15,21 @@ const markerGuardBytes = 32
 // 策略：
 //   - 每次追加后先检查缓冲区里有没有标记特征；命中就进入「扣押模式」，
 //     此后不再外发，全部留在缓冲区等结尾整体解析。
-//   - 未命中时只保留末尾 markerGuardBytes 字节，其余立即外发；
-//     切分点回退到完整 UTF-8 边界，否则 JSON 序列化会把半个汉字变成 U+FFFD。
+//   - 未命中时只扣住「末尾正好是某个标记前缀」的那几个字节，其余立即外发。
+//     不能用一个固定大小的窗口（例如 32 字节）：短回答（几段中文）会一直
+//     小于窗口，结果全被扣到流结束——看起来又变回了伪流式。
+//   - 切分点回退到完整 UTF-8 边界，否则 JSON 序列化会把半个汉字变成 U+FFFD。
 //   - 结尾 Flush 取出剩余文本；若解析不出工具调用（误判），调用方补发即可。
 //
 // MarkerGuard 不是并发安全的：一个客户端流配一个实例。
 type MarkerGuard struct {
 	buf     []byte
 	blocked bool
-	keep    int
 	marker  string // 命中的标记特征，仅用于日志
 }
 
 func NewMarkerGuard() *MarkerGuard {
-	return &MarkerGuard{keep: markerGuardBytes}
+	return &MarkerGuard{}
 }
 
 // Write 追加一段正文增量，返回可以立即下发的安全部分。
@@ -53,7 +47,7 @@ func (g *MarkerGuard) Write(chunk string) (safe string, blocked bool) {
 		g.marker = markerKind(g.buf)
 		return "", true
 	}
-	cut := len(g.buf) - g.keep
+	cut := len(g.buf) - holdbackLen(g.buf)
 	if cut <= 0 {
 		return "", false
 	}
@@ -64,6 +58,44 @@ func (g *MarkerGuard) Write(chunk string) (safe string, blocked bool) {
 	safe = string(g.buf[:cut])
 	g.buf = append(g.buf[:0], g.buf[cut:]...)
 	return safe, false
+}
+
+// holdbackLen 返回「必须继续扣住、否则可能把标记切断」的尾部字节数。
+//
+// 只扣住能被补成标记的那些后缀：比如末尾是 "tool_ca" 就再等几个字节，
+// 末尾是「第一段」则一个字节都不扣，立刻下发。
+func holdbackLen(buf []byte) int {
+	if len(buf) == 0 {
+		return 0
+	}
+	lower := strings.ToLower(string(buf))
+	best := 0
+	for _, m := range toolMarkers {
+		max := len(m) - 1 // 完整匹配已经在上层判过，这里只可能是前缀
+		if max > len(lower) {
+			max = len(lower)
+		}
+		for n := max; n > best; n-- {
+			if strings.HasSuffix(lower, m[:n]) {
+				best = n
+				break
+			}
+		}
+	}
+	// 行首的 "% ToolName" 也是工具语法：单个 % 先扣住，看后面是不是跟了名字
+	if best < 1 && lower[len(lower)-1] == '%' {
+		best = 1
+	}
+	// 标记的开头（<function=、<|DSML|）连同尖括号/竖线一起扣住，
+	// 否则客户端会先看到一个孤零零的 "<"。
+	for best > 0 {
+		i := len(buf) - best - 1
+		if i < 0 || (buf[i] != '<' && buf[i] != '|') {
+			break
+		}
+		best++
+	}
+	return best
 }
 
 // Flush 取出仍在缓冲区里的文本（流结束时调用）。

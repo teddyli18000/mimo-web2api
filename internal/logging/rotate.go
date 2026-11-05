@@ -26,14 +26,7 @@ func (l *Logger) rotateLocked(now time.Time) error {
 	if l.file != nil && l.curDate == date {
 		return nil
 	}
-	if l.bw != nil {
-		_ = l.bw.Flush()
-	}
-	if l.file != nil {
-		_ = l.file.Close()
-		l.file = nil
-		l.bw = nil
-	}
+	l.closeLocked()
 
 	path := filepath.Join(l.cfg.Dir, date+".log")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
@@ -47,6 +40,21 @@ func (l *Logger) rotateLocked(now time.Time) error {
 	// 切新文件时顺手清理一次：即使 ticker 没跑到，也不会让过期文件堆积
 	l.cleanupLocked(now)
 	return nil
+}
+
+// closeLocked 刷盘并关闭当前文件；已持锁。
+//
+// 必须真的 close：Windows 上句柄没关就删不掉文件（单测的 TempDir 清理会报
+// "The process cannot access the file"），日志目录也跟着删不掉。
+func (l *Logger) closeLocked() {
+	if l.bw != nil {
+		_ = l.bw.Flush()
+		l.bw = nil
+	}
+	if l.file != nil {
+		_ = l.file.Close()
+		l.file = nil
+	}
 }
 
 // cleanupLoop 周期性清理过期日志。

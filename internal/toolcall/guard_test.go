@@ -25,6 +25,40 @@ func TestMarkerGuardStreamsPlainText(t *testing.T) {
 	}
 }
 
+// 短句必须立刻下发：固定的尾窗口会把「第一段」这种小 chunk 一直扣到流结束，
+// 客户端看到的仍然是「等全部生成完才出字」。
+func TestMarkerGuardStreamsShortChunksImmediately(t *testing.T) {
+	g := NewMarkerGuard()
+	for _, chunk := range []string{"第一段", "第二段", "第三段"} {
+		safe, blocked := g.Write(chunk)
+		if blocked {
+			t.Fatalf("普通正文被误判: %q", chunk)
+		}
+		if safe != chunk {
+			t.Fatalf("短句被扣住了: got %q want %q", safe, chunk)
+		}
+	}
+	if rest := g.Flush(); rest != "" {
+		t.Fatalf("不该有残留: %q", rest)
+	}
+}
+
+// 末尾恰好是标记前缀时，只扣住这几个字节。
+func TestMarkerGuardHoldsOnlyMarkerPrefix(t *testing.T) {
+	g := NewMarkerGuard()
+	safe, _ := g.Write("文档里提到 tool_ca")
+	if safe != "文档里提到 " {
+		t.Fatalf("应只扣住前缀，实际下发: %q", safe)
+	}
+	safe, blocked := g.Write("lls 这个词。")
+	if !blocked {
+		t.Fatal("补全后应识别为标记")
+	}
+	if safe != "" {
+		t.Fatalf("扣押模式不应再下发: %q", safe)
+	}
+}
+
 // 标记被切碎逐字喂进来：命中前不能把标记前半截漏出去。
 func TestMarkerGuardHoldsSplitMarker(t *testing.T) {
 	g := NewMarkerGuard()
@@ -92,15 +126,18 @@ func TestMarkerGuardUTF8Boundary(t *testing.T) {
 	}
 }
 
-// FlushPrefix 只吐标记之前的正文，标记本身留在缓冲区。
+// FlushPrefix 不能把已经下发过的正文再发一遍（否则客户端会看到重复段落），
+// 同时标记本身必须留在缓冲区里交给解析器。
 func TestMarkerGuardFlushPrefix(t *testing.T) {
 	g := NewMarkerGuard()
-	g.Write("好的，我来查一下。")
+	safe, _ := g.Write("好的，我来查一下。")
+	if safe != "好的，我来查一下。" {
+		t.Fatalf("说明文字应立即下发: %q", safe)
+	}
 	g.Write("<function=WebFetch>")
 
-	pre := g.FlushPrefix()
-	if pre != "好的，我来查一下。" {
-		t.Fatalf("前缀不对: %q", pre)
+	if pre := g.FlushPrefix(); pre != "" {
+		t.Fatalf("已经下发过的正文不该重复: %q", pre)
 	}
 	if g.Flush() != "<function=WebFetch>" {
 		t.Fatal("标记本身应该留在缓冲区")
