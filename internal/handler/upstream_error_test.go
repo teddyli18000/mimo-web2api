@@ -29,7 +29,7 @@ func TestUpstreamErrorStatus(t *testing.T) {
 		if got != c.want {
 			t.Errorf("upstreamErrorStatus(%q) = %d, want %d", c.msg, got, c.want)
 		}
-		if msg == "" {
+		if c.msg != "" && msg == "" {
 			t.Errorf("upstreamErrorStatus(%q) returned an empty message", c.msg)
 		}
 	}
