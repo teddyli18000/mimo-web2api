@@ -37,8 +37,11 @@ type OpenAIToolFunction struct {
 type OpenAIMessage struct {
 	Role       string           `json:"role"`
 	Content    interface{}      `json:"content"` // string 或 []ContentPart
-	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+	// ReasoningContent 是上游 v3 的 reasoningContent（思考链）。DeepSeek 系客户端认这个字段，
+	// 普通 OpenAI 客户端会忽略未知字段，所以只在非空时输出。
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string           `json:"tool_call_id,omitempty"`
 }
 
 // OpenAIToolCall 是 OpenAI 格式的工具调用
@@ -76,9 +79,10 @@ type OpenAIChoice struct {
 
 // OpenAIDelta 是流式增量
 type OpenAIDelta struct {
-	Role      string           `json:"role,omitempty"`
-	Content   string           `json:"content,omitempty"`
-	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
+	Role             string           `json:"role,omitempty"`
+	Content          string           `json:"content,omitempty"`
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
 }
 
 // OpenAIUsage 是 token 使用量
@@ -124,6 +128,13 @@ func MakeOpenAIStreamContentChunk(id, model, content string) []byte {
 	}, nil)
 }
 
+// MakeOpenAIStreamReasoningChunk 思考链增量块（reasoning_content）。
+func MakeOpenAIStreamReasoningChunk(id, model, reasoning string) []byte {
+	return marshalChunk(id, model, []OpenAIChoice{
+		{Index: 0, Delta: &OpenAIDelta{ReasoningContent: reasoning}},
+	}, nil)
+}
+
 // MakeOpenAIStreamFinishChunk 收尾块（finish_reason=stop）
 func MakeOpenAIStreamFinishChunk(id, model string) []byte {
 	fr := "stop"
@@ -161,7 +172,7 @@ func MakeOpenAIStreamUsageChunk(id, model string, usage *OpenAIUsage) []byte {
 
 
 // MakeOpenAIResponseWithUsage 创建带 usage 的非流式响应
-func MakeOpenAIResponseWithUsage(model, content string, usage *OpenAIUsage) []byte {
+func MakeOpenAIResponseWithUsage(model, content, reasoning string, usage *OpenAIUsage) []byte {
 	now := time.Now().Unix()
 	fr := "stop"
 	resp := OpenAIChatResponse{
@@ -173,8 +184,9 @@ func MakeOpenAIResponseWithUsage(model, content string, usage *OpenAIUsage) []by
 			{
 				Index: 0,
 				Message: &OpenAIMessage{
-					Role:    "assistant",
-					Content: content,
+					Role:             "assistant",
+					Content:          content,
+					ReasoningContent: reasoning,
 				},
 				FinishReason: &fr,
 			},

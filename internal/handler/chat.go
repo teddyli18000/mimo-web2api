@@ -64,6 +64,7 @@ const sseIdleTimeout = 180 * time.Second
 // webResult 收集上游 MiMo 网页端 SSE 流的完整结果
 type webResult struct {
 	Text        string     // 过滤 think 与 \u0000 后的全部正文
+	Reasoning   string     // v3 的 reasoningContent（思考链），单独透传给客户端
 	Usage       *usageData // 最后一个 usage 事件（fastchat 会发多个，取最后一个）
 	LastMsgID   string     // 最后一个带 id 的事件 id
 	UpstreamErr string     // event:error 的 content
@@ -101,6 +102,7 @@ func collectWebResultFromReader(ctx context.Context, reader io.ReadCloser) (webR
 
 	var (
 		content     strings.Builder
+		reasoning   strings.Builder
 		inThinking  bool
 		lastUsage   *usageData
 		lastMsgID   string
@@ -146,8 +148,12 @@ collect:
 				if err := json.Unmarshal([]byte(ev.Data), &msg); err != nil {
 					continue
 				}
-				// v2 是 type=text；v3 不再带 type，正文在 content，思考在 reasoningContent。
-				// 思考内容不对外输出（网关本来就会过滤 <think>），这里只取正文。
+				// v3 的思考链单独放在 reasoningContent：不混进正文，但原样记下来，
+				// 后面以 reasoning_content 字段透传给客户端（DeepSeek 系客户端认这个）。
+				if msg.ReasoningContent != "" {
+					reasoning.WriteString(msg.ReasoningContent)
+				}
+				// v2 是 type=text；v3 不再带 type，正文在 content。
 				if msg.Content != "" && (msg.Type == "" || msg.Type == "text") {
 					c := strings.ReplaceAll(msg.Content, "\u0000", "")
 					c, inThinking = filterThinkingChunk(c, inThinking)
@@ -191,6 +197,7 @@ collect:
 
 	return webResult{
 		Text:        content.String(),
+		Reasoning:   reasoning.String(),
 		Usage:       lastUsage,
 		LastMsgID:   lastMsgID,
 		UpstreamErr: upstreamErr,
@@ -426,6 +433,9 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		streamID := adapter.NewStreamID()
+		if result.Reasoning != "" {
+			fmt.Fprintf(w, "data: %s\n\n", adapter.MakeOpenAIStreamReasoningChunk(streamID, model, result.Reasoning))
+		}
 		fmt.Fprintf(w, "data: %s\n\n", adapter.MakeOpenAIStreamContentChunk(streamID, model, result.Text))
 		fmt.Fprintf(w, "data: %s\n\n", adapter.MakeOpenAIStreamFinishChunk(streamID, model))
 		if openaiUsage != nil {
@@ -436,7 +446,7 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 			f.Flush()
 		}
 	} else {
-		respBody := adapter.MakeOpenAIResponseWithUsage(model, result.Text, openaiUsage)
+		respBody := adapter.MakeOpenAIResponseWithUsage(model, result.Text, result.Reasoning, openaiUsage)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(respBody)
 	}

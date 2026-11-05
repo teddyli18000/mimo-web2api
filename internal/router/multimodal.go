@@ -32,9 +32,30 @@ type RouteResult struct {
 // 均能正确识别图片内容），因带图而降级只会白白损失推理能力。
 //
 // fallback 来自 config.json 的 default_model（管理面板可改）；传空串时退回常量。
+// claudeAlias 把 Claude 客户端带的模型名映射到 MiMo 型号。
+// 只按系列分档：opus 走深度推理，sonnet / haiku 走日常。
+// 4-6、4-5、3-7 这些版本号对 MiMo 没有意义，不必逐一枚举。
+func claudeAlias(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if !strings.HasPrefix(m, "claude") {
+		return ""
+	}
+	switch {
+	case strings.Contains(m, "opus"):
+		return ModelV26Pro
+	case strings.Contains(m, "sonnet"), strings.Contains(m, "haiku"):
+		return ModelV26Flash
+	default:
+		return ""
+	}
+}
+
 func RouteModel(requestedModel string, fallback string) RouteResult {
-	// Claude 客户端会带 claude-* 模型名：不认识就回落默认模型，而不是把
-	// "claude-opus-4-6" 当成 MiMo 型号发给上游（会被判模型名称错误）。
+	// Claude 客户端会带 claude-* 模型名：认识就按系列映射，
+	// 不认识就回落默认模型，而不是把 "claude-xxx" 当成 MiMo 型号发给上游。
+	if alias := claudeAlias(requestedModel); alias != "" {
+		return RouteResult{Model: alias, Reason: "claude_alias"}
+	}
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(requestedModel)), "claude") {
 		requestedModel = ""
 	}

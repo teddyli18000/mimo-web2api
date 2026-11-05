@@ -55,6 +55,21 @@ export default defineSuite({
         assert.ok(chunks.indexOf(finish) < chunks.indexOf(usageChunk), 'usage 块必须在收尾块之后');
       });
 
+      await t.test('v3 思考链透传为 reasoning_content', async () => {
+        upstream.onChat({ text: 'the answer', reasoning: 'inner thoughts' });
+        const res = await api.chat(chatRequest());
+        assert.equal(res.status, 200, res.text);
+        assert.equal(res.json.choices[0].message.content, 'the answer');
+        assert.equal(res.json.choices[0].message.reasoning_content, 'inner thoughts');
+
+        upstream.onChat({ text: 'streamed answer', reasoning: 'streamed thoughts' });
+        const streamed = await api.chat(chatRequest({ stream: true }));
+        const chunks = parseOpenAIStream(streamed.text);
+        const reasoningChunk = chunks.find(c => c.choices?.[0]?.delta?.reasoning_content);
+        assert.ok(reasoningChunk, 'stream 里缺少 reasoning_content 增量');
+        assert.equal(reasoningChunk.choices[0].delta.reasoning_content, 'streamed thoughts');
+      });
+
       await t.test('thinking 段不会漏进正文', async () => {
         upstream.onChat({ text: '<think>secret reasoning</think>visible' });
         const res = await api.chat(chatRequest());
