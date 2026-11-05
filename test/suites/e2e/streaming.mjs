@@ -149,8 +149,9 @@ export default defineSuite({
         upstream.onChat({
           chunks: [
             { event: 'dialogId', data: { content: 'dlg_think' } },
-            { event: 'message', data: { reasoningContent: '先想一下' }, delayMs: 400 },
-            { event: 'message', data: { content: '答案是 42' }, delayMs: 400 },
+            { event: 'message', data: { reasoningContent: '先想一下' }, delayMs: 200 },
+            { event: 'message', data: { content: '答案是' }, delayMs: 200 },
+            { event: 'message', data: { content: ' 42' }, delayMs: 600 },
             { event: 'usage', data: { promptTokens: 5, completionTokens: 6, totalTokens: 11 } },
             { event: 'finish', data: { content: '[DONE]' } },
           ],
@@ -174,6 +175,12 @@ export default defineSuite({
         const names = events.map(e => e.event);
         assert.ok(names.includes('message_start'));
         assert.ok(names.includes('message_stop'));
+
+        const textJoined = events
+          .filter(e => e.event === 'content_block_delta' && e.data?.delta?.type === 'text_delta')
+          .map(e => e.data.delta.text)
+          .join('');
+        assert.equal(textJoined, '答案是 42');
 
         const firstText = res.marks.find(m => m.chunk.includes('先想一下'));
         assert.ok(firstText, 'thinking 没有被提前下发');
