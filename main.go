@@ -121,6 +121,8 @@ func main() {
 		r.Delete("/accounts", adminHandler.DeleteAccount)
 		r.Get("/health", adminHandler.HealthCheck)
 		r.Get("/stats", adminHandler.GetStats)
+		// 模型列表来自上游公开配置，缓存 10 分钟；这里强制刷新
+		r.Post("/models/refresh", handler.RefreshModelsHandler)
 	})
 
 	// 前端 SPA

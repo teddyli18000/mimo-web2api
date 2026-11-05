@@ -205,6 +205,8 @@ curl http://localhost:8080/v1/messages \
 | `mimo-v2.6-flash` | v2.6 日常（300B，1M 上下文） |
 | `mimo-v2.6-pro` | v2.6 深度推理（1T，1M 上下文） |
 | `mimo-v2.6-pro-ultraspeed-studio` | v2.6 极速版 |
+
+模型列表通过上游公开配置 `/open-apis/bot/config` 动态发现（缓存 10 分钟），拉取失败时回退到内置列表；`POST /admin/api/models/refresh` 可强制刷新。
 | `mimo-v2.5` / `mimo-v2.5-pro` | 上一代（兼容保留） |
 
 三个 v2.6 模型**都能识图**（实测同一张纯色图分别识别为红/蓝），所以不按内容类型切模型：

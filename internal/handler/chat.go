@@ -547,13 +547,7 @@ func writeAnthropicError(w http.ResponseWriter, status int, msg string) {
 	})
 }
 
-func ModelsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"object": "list",
-		"data":   router.SupportedModels(),
-	})
-}
+
 
 // MessagesHandler Anthropic 格式
 type MessagesHandler struct {
