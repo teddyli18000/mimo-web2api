@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -33,6 +34,11 @@ func fetchModelsCached(force bool) []mimo.ModelInfo {
 
 	models, err := mimo.FetchModels(ctx)
 	if err != nil || len(models) == 0 {
+		if err != nil {
+			log.Printf("[models] fetch from upstream failed: %v", err)
+		} else {
+			log.Printf("[models] upstream returned an empty model list")
+		}
 		// 拉不到就继续用旧缓存；连旧缓存都没有时用内置列表
 		if len(modelCache.models) > 0 {
 			return modelCache.models
