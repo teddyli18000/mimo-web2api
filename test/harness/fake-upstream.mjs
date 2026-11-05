@@ -27,6 +27,17 @@ function route(req, res, url, record, state) {
   if (req.method === 'GET' && p === '/open-apis/user/mi/get') {
     return json(res, 200, { code: 0 });
   }
+  // 模型配置：公开端点，网关的 /v1/models 从这里取列表
+  if (req.method === 'GET' && p === '/open-apis/bot/config') {
+    return json(res, 200, {
+      code: 0,
+      data: {
+        modelConfigList: [
+          { model: 'mimo-fake-chat', name: 'Fake Chat', cnIntro: '测试模型', showImage: true, showFile: true },
+        ],
+      },
+    });
+  }
   if (req.method === 'POST' && CHAT_PATHS.has(p)) {
     return chat(req, res, state, p);
   }
