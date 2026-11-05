@@ -149,5 +149,10 @@ func markerIndex(buf []byte) int {
 	if strings.HasPrefix(lower, "%") {
 		best = 0
 	}
+	// 标记前的尖括号/竖线也是标记的一部分（`<function=`、`<|DSML|tool_calls>`），
+	// 否则补发前缀时会甩一个孤零零的 "<" 给客户端。
+	for best > 0 && (buf[best-1] == '<' || buf[best-1] == '|') {
+		best--
+	}
 	return best
 }
