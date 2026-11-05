@@ -8,40 +8,69 @@ import (
 	"github.com/teddyli18000/mimo-web2api/internal/mimo"
 )
 
-// 上下文压缩：query 接近上游长度上限时，先让模型把历史压成摘要，
-// 再拼上最近一段原文。纯截断会丢掉前面所有关键约束（文件路径、待办、数字），
-// 摘要能保住这些，代价是长会话多一次上游调用。
+// 上下文压缩：原始历史超过预算 80% 时，先让上游把较早的部分压成摘要，
+// 再拼上最近几轮原文。纯截断会把历史整段丢掉（serializeRoleTexts 超限时
+// 正是这么做的），摘要能保住文件路径、数字、待办这些关键约束。
 const (
-	compressTrigger    = 0.8  // 超过预算 80% 触发
-	compressKeepRatio  = 0.3  // 摘要后保留尾部原文的比例
-	compressPromptChars = 12000 // 送进摘要请求的历史上限
+	compressTrigger     = 0.8   // 触发阈值（占预算比例）
+	compressKeepMsgs    = 4     // 摘要后保留的最近消息数
+	compressPromptChars = 12000 // 送给摘要请求的历史上限
 )
 
-func compressQuery(ctx context.Context, client *mimo.WebClient, query, model string, budget int) string {
-	if budget <= 0 || float64(len(query)) < float64(budget)*compressTrigger {
-		return query
+func compressRoleTexts(ctx context.Context, client *mimo.WebClient, rts []roleText, model string, budget int) []roleText {
+	if budget <= 0 {
+		return rts
 	}
 
-	keep := int(float64(budget) * compressKeepRatio)
-	if keep <= 0 || keep > len(query) {
-		keep = len(query) / 3
+	total := 0
+	for _, rt := range rts {
+		total += len(rt[1])
 	}
-	head := query[:len(query)-keep]
-	tail := query[len(query)-keep:]
-	if len(head) > compressPromptChars {
-		head = head[len(head)-compressPromptChars:]
+	if float64(total) < float64(budget)*compressTrigger {
+		return rts
+	}
+
+	var system, rest []roleText
+	for _, rt := range rts {
+		if rt[0] == "system" {
+			system = append(system, rt)
+		} else {
+			rest = append(rest, rt)
+		}
+	}
+	if len(rest) <= compressKeepMsgs {
+		return rts // 全是最近消息，没有可压缩的历史
+	}
+
+	cut := len(rest) - compressKeepMsgs
+	older := rest[:cut]
+	recent := rest[cut:]
+
+	var b strings.Builder
+	for _, rt := range older {
+		b.WriteString(rt[0])
+		b.WriteString(": ")
+		b.WriteString(rt[1])
+		b.WriteString("\n")
+	}
+	history := b.String()
+	if len(history) > compressPromptChars {
+		history = history[len(history)-compressPromptChars:]
 	}
 
 	prompt := "请把下面的对话历史压缩成不超过 600 字的事实摘要：" +
-		"保留结论、数字、文件路径、待办与用户约束；不要编造，不要加评论。\n\n" + head
+		"保留结论、数字、文件路径、待办与用户约束；不要编造，不要加评论。\n\n" + history
 
 	result, err := collectWebResult(ctx, client, prompt, model, randomHex32(), "0", nil, false, "")
 	if err != nil || strings.TrimSpace(result.Text) == "" {
 		log.Printf("[compress] skipped (err=%v, summary len=%d), fallback to truncation", err, len(result.Text))
-		return query
+		return rts
 	}
 
-	summary := "[历史摘要]\n" + strings.TrimSpace(result.Text) + "\n\n" + tail
-	log.Printf("[compress] %d -> %d chars", len(query), len(summary))
-	return summary
+	out := make([]roleText, 0, len(system)+1+len(recent))
+	out = append(out, system...)
+	out = append(out, mkRT("system", "[历史摘要]\n"+strings.TrimSpace(result.Text)))
+	out = append(out, recent...)
+	log.Printf("[compress] %d -> %d chars (%d older messages summarized)", total, len(result.Text), len(older))
+	return out
 }

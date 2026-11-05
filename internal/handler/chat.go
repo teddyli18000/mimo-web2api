@@ -270,9 +270,9 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 		if full && compressedFull != "" {
 			return compressedFull
 		}
-		msgs := req.Messages
+		rts := roleTexts
 		if !full {
-			msgs = DeltaMessages(req.Messages)
+			rts = toRoleTexts(DeltaMessages(req.Messages))
 		}
 		var extra []string
 		if len(req.Tools) > 0 {
@@ -285,9 +285,11 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 		if !full && useAnchor {
 			extra = append(extra, "Current task (the user's request you are working on): "+taskAnchor)
 		}
-		q := serializeMessages(msgs, budget, extra...)
 		if full {
-			q = compressQuery(ctx, client, q, model, budget)
+			rts = compressRoleTexts(ctx, client, rts, model, budget)
+		}
+		q := serializeRoleTexts(rts, budget, extra...)
+		if full {
 			compressedFull = q
 		}
 		return q
@@ -619,9 +621,9 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		if full && compressedFullA != "" {
 			return compressedFullA
 		}
-		msgs := req.Messages
+		rts := roleTexts
 		if !full {
-			msgs = DeltaMessagesAnthropic(req.Messages)
+			rts = toRoleTextsAnthropic(DeltaMessagesAnthropic(req.Messages), systemText)
 		}
 		var extra []string
 		if hasTools {
@@ -635,9 +637,11 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		if !full && useAnchorA {
 			extra = append(extra, "Current task (the user's request you are working on): "+taskAnchorA)
 		}
-		q := serializeMessagesAnthropic(msgs, systemText, budgetA, extra...)
 		if full {
-			q = compressQuery(ctx, client, q, routeResult.Model, budgetA)
+			rts = compressRoleTexts(ctx, client, rts, routeResult.Model, budgetA)
+		}
+		q := serializeRoleTexts(rts, budgetA, extra...)
+		if full {
 			compressedFullA = q
 		}
 		return q

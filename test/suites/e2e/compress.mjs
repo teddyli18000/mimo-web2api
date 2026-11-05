@@ -26,7 +26,13 @@ export default defineSuite({
           messages: [
             { role: 'system', content: 'you are a helpful agent' },
             { role: 'user', content: LONG },
-            { role: 'assistant', content: 'noted' },
+            { role: 'assistant', content: 'noted the long context' },
+            { role: 'user', content: 'step 2' },
+            { role: 'assistant', content: 'done step 2' },
+            { role: 'user', content: 'step 3' },
+            { role: 'assistant', content: 'done step 3' },
+            { role: 'user', content: 'step 4' },
+            { role: 'assistant', content: 'done step 4' },
             { role: 'user', content: 'now summarize the task' },
           ],
         }), { timeout: 60_000 });
