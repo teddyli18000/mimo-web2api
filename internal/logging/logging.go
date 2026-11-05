@@ -299,19 +299,26 @@ var sensitiveKeys = []string{
 
 // Redact 抹掉字符串里可能混进来的凭据值。
 // 上游报错正文偶尔回显请求 URL，里面就带着 xiaomichatbot_ph。
+//
+// 注意搜索起点必须往前推：替换后 key 本身仍然留在原处，
+// 每次从 0 开始找会反复命中同一个 key（并不断追加 ***），直接死循环。
 func Redact(s string) string {
+	const mask = "***"
 	for _, key := range sensitiveKeys {
+		from := 0
 		for {
-			i := strings.Index(s, key)
+			i := strings.Index(s[from:], key)
 			if i < 0 {
 				break
 			}
+			i += from
 			j := i + len(key)
 			k := j
 			for k < len(s) && !isValueEnd(s[k]) {
 				k++
 			}
-			s = s[:j] + "***" + s[k:]
+			s = s[:j] + mask + s[k:]
+			from = j + len(mask)
 		}
 	}
 	return s

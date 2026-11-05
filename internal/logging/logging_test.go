@@ -146,7 +146,19 @@ func TestLogNeverBlocksWhenQueueFull(t *testing.T) {
 
 func TestRedact(t *testing.T) {
 	in := "GET /open?xiaomichatbot_ph=%22secret%22&userId=42 serviceToken=abc"
-	out := Redact(in)
+
+	// 用超时兜住「替换后指针没有前进」这类死循环：
+	// 不包一层的话，写错一次就会让整个 CI 卡到 go test 十分钟超时。
+	done := make(chan string, 1)
+	go func() { done <- Redact(in) }()
+
+	var out string
+	select {
+	case out = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Redact 没有返回（替换循环很可能没有推进）")
+	}
+
 	for _, leak := range []string{"%22secret%22", "userId=42", "serviceToken=abc"} {
 		if strings.Contains(out, leak) {
 			t.Fatalf("凭据没被抹掉 (%s): %s", leak, out)
