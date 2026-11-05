@@ -13,8 +13,9 @@ import (
 // data.modelConfigList，每条带 model / name / 简介 / 是否支持图片与文件。
 const modelConfigAPI = "/open-apis/bot/config"
 
-// ModelConfig 是上游模型配置的一条记录（只保留网关用得到的字段）。
-type ModelConfig struct {
+// ModelInfo 是上游模型配置的一条记录（只保留网关用得到的字段）。
+// 注意别和请求体里的 ModelConfig（modelConfig 字段）重名。
+type ModelInfo struct {
 	Model             string `json:"model"`
 	Name              string `json:"name"`
 	Intro             string `json:"cnIntro"`
@@ -24,7 +25,7 @@ type ModelConfig struct {
 }
 
 // FetchModels 拉取上游模型列表。调用方负责缓存；失败时返回错误由调用方回退。
-func FetchModels(ctx context.Context) ([]ModelConfig, error) {
+func FetchModels(ctx context.Context) ([]ModelInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, webBaseURL+modelConfigAPI, nil)
 	if err != nil {
 		return nil, err
@@ -46,8 +47,8 @@ func FetchModels(ctx context.Context) ([]ModelConfig, error) {
 	var payload struct {
 		Code int `json:"code"`
 		Data struct {
-			List   []ModelConfig `json:"modelConfigList"`
-			ListNg []ModelConfig `json:"modelConfigListNg"`
+			List   []ModelInfo `json:"modelConfigList"`
+			ListNg []ModelInfo `json:"modelConfigListNg"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -61,7 +62,7 @@ func FetchModels(ctx context.Context) ([]ModelConfig, error) {
 	if len(list) == 0 {
 		list = payload.Data.ListNg
 	}
-	out := make([]ModelConfig, 0, len(list))
+	out := make([]ModelInfo, 0, len(list))
 	seen := make(map[string]bool, len(list))
 	for _, m := range list {
 		if m.Model == "" || seen[m.Model] {

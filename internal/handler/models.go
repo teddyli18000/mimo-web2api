@@ -18,10 +18,10 @@ const modelCacheTTL = 10 * time.Minute
 var modelCache struct {
 	mu        sync.Mutex
 	fetchedAt time.Time
-	models    []mimo.ModelConfig
+	models    []mimo.ModelInfo
 }
 
-func fetchModelsCached(force bool) []mimo.ModelConfig {
+func fetchModelsCached(force bool) []mimo.ModelInfo {
 	modelCache.mu.Lock()
 	defer modelCache.mu.Unlock()
 
