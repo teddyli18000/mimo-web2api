@@ -309,7 +309,8 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 		result, err = collectWebResult(ctx, client, query, model, curConvID, curParentID, medias)
 		if err != nil {
 			log.Printf("[error] web chat (attempt %d): %v", attempt+1, err)
-			writeError(w, http.StatusBadGateway, fmt.Sprintf("mimo error: %v", err))
+			status, msg := upstreamErrorStatus(err.Error())
+			writeError(w, status, "mimo error: "+msg)
 			return
 		}
 
@@ -317,7 +318,8 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 		// 把截断内容当成功返回，agent 客户端会据此继续往下走。
 		if result.UpstreamErr != "" {
 			log.Printf("[error] mimo upstream error (partial len=%d): %s", len(result.Text), result.UpstreamErr)
-			writeError(w, http.StatusBadGateway, "mimo: "+result.UpstreamErr)
+			status, msg := upstreamErrorStatus(result.UpstreamErr)
+			writeError(w, status, "mimo: "+msg)
 			return
 		}
 
@@ -482,6 +484,29 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	})
 }
 
+// upstreamErrorStatus 把上游文案映射成客户端能正确处理的语义：
+// 繁忙 → 503（SDK 会退避重试），模型名/内容问题 → 400（重试没有意义），
+// 登录态失效 → 502 但文案直接告诉用户去面板重同步 Cookie。
+func upstreamErrorStatus(msg string) (int, string) {
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(msg, "繁忙") || strings.Contains(msg, "稍后再试") ||
+		strings.Contains(lower, "busy") || strings.Contains(lower, "overloaded"):
+		return http.StatusServiceUnavailable, msg
+	case strings.Contains(msg, "模型名称") || strings.Contains(msg, "模型不存在") ||
+		strings.Contains(lower, "model not found") || strings.Contains(lower, "invalid model"):
+		return http.StatusBadRequest, "不支持的模型：" + msg
+	case strings.Contains(msg, "敏感") || strings.Contains(msg, "违规") ||
+		strings.Contains(lower, "sensitive") || strings.Contains(lower, "content policy"):
+		return http.StatusBadRequest, "内容被上游拒绝：" + msg
+	case strings.Contains(msg, "401") || strings.Contains(msg, "403") ||
+		strings.Contains(msg, "未登录") || strings.Contains(msg, "登录"):
+		return http.StatusBadGateway, "上游登录态已失效，请在面板重新同步 Cookie：" + msg
+	default:
+		return http.StatusBadGateway, msg
+	}
+}
+
 // writeAnthropicError 按 Anthropic 规范返回错误：
 //
 //	{"type":"error","error":{"type":"invalid_request_error","message":"…"}}
@@ -625,14 +650,16 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		result, err = collectWebResult(ctx, client, query, routeResult.Model, curConvID, curParentID, mediasA)
 		if err != nil {
 			log.Printf("[error] Anthropic web chat (attempt %d): %v", attempt+1, err)
-			writeAnthropicError(w, http.StatusBadGateway, err.Error())
+			status, msg := upstreamErrorStatus(err.Error())
+			writeAnthropicError(w, status, msg)
 			return
 		}
 
 		// 上游业务错误一律报错，即使已有部分正文（同 OpenAI 路径）
 		if result.UpstreamErr != "" {
 			log.Printf("[error] Anthropic mimo upstream error (partial len=%d): %s", len(result.Text), result.UpstreamErr)
-			writeAnthropicError(w, http.StatusBadGateway, "mimo: "+result.UpstreamErr)
+			status, msg := upstreamErrorStatus(result.UpstreamErr)
+			writeAnthropicError(w, status, "mimo: "+msg)
 			return
 		}
 
