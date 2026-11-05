@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/teddyli18000/mimo-web2api/internal/config"
 	"github.com/teddyli18000/mimo-web2api/internal/convstore"
 	"github.com/teddyli18000/mimo-web2api/internal/handler"
+	"github.com/teddyli18000/mimo-web2api/internal/logging"
 	"github.com/teddyli18000/mimo-web2api/internal/pool"
 	"github.com/teddyli18000/mimo-web2api/internal/stats"
 )
@@ -67,11 +69,31 @@ func main() {
 	os.MkdirAll(dataDir, 0755)
 	stats.Init(filepath.Join(dataDir, "stats.json"))
 
+	// 结构化日志：data/logs/YYYY-MM-DD.log，超过保留期自动删除
+	logDir := filepath.Join(dataDir, "logs")
+	logRetention := logRetentionDays()
+	if err := logging.Init(logging.Config{
+		Dir:       logDir,
+		Level:     logging.ParseLevel(os.Getenv("LOG_LEVEL")),
+		Retention: logRetention,
+		Console:   os.Getenv("LOG_CONSOLE") != "0",
+	}); err != nil {
+		log.Printf("⚠️  日志文件初始化失败，仅输出到控制台：%v", err)
+	} else {
+		// 存量代码全是 log.Printf；接管输出后自动带上级别与时间戳
+		log.SetOutput(logging.Writer())
+		log.SetFlags(0)
+		defer logging.Shutdown()
+	}
+
 	// 初始化账号池
 	accountPool := pool.New(cfg.Accounts)
 
 	// 路由
 	r := chi.NewRouter()
+	// RequestID 必须最先安装：AccessLog 依赖 context 里的请求字段袋
+	r.Use(logging.RequestID)
+	r.Use(logging.AccessLog)
 	r.Use(middleware.Recoverer)
 	// 注意：不使用 middleware.RealIP —— 本服务直连部署，信任 X-Forwarded-For
 	// 会被伪造头绕过来源校验。
@@ -120,7 +142,9 @@ func main() {
 		r.Post("/accounts", adminHandler.AddAccount)
 		r.Delete("/accounts", adminHandler.DeleteAccount)
 		r.Get("/health", adminHandler.HealthCheck)
+		r.Get("/accounts/status", adminHandler.AccountsStatus)
 		r.Get("/stats", adminHandler.GetStats)
+		r.Get("/logs", adminHandler.Logs)
 		// 模型列表来自上游公开配置，缓存 10 分钟；这里强制刷新
 		r.Post("/models/refresh", handler.RefreshModelsHandler)
 	})
@@ -152,6 +176,7 @@ func main() {
 	panelURL := fmt.Sprintf("http://localhost%s", addr)
 	log.Printf("🚀 MiMo Web2API starting on %s", panelURL)
 	log.Printf("   Accounts: %d, API Key: see config.json", accountPool.Count())
+	log.Printf("   日志：%s（保留 %d 天）", logDir, int(logRetention.Hours()/24))
 
 	// 双击运行：启动后自动打开管理面板（设置 NO_BROWSER_OPEN=1 关闭）
 	if os.Getenv("NO_BROWSER_OPEN") != "1" {
@@ -168,6 +193,17 @@ func main() {
 		fmt.Scanln()
 		os.Exit(1)
 	}
+}
+
+// logRetentionDays 日志保留天数，默认 7 天，可用 LOG_RETENTION_DAYS 覆盖。
+func logRetentionDays() time.Duration {
+	days := 7
+	if v := strings.TrimSpace(os.Getenv("LOG_RETENTION_DAYS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			days = n
+		}
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
 
 // resolveBaseDir 决定 config.json 与 data/ 的落盘位置。

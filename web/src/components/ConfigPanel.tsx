@@ -12,6 +12,17 @@ interface Account {
   active: boolean
 }
 
+// AccountStatus 来自 /admin/api/accounts/status：账号池的实时健康状态。
+// 只读、不打上游，面板可以放心轮询。
+interface AccountStatus {
+  id: string
+  healthy: boolean
+  probing: boolean
+  failures: number
+  last_error?: string
+  down_since?: string
+}
+
 // 从 curl / Cookie 字符串里抠出三项凭据。只做本地解析，不发任何请求。
 function parseCredentials(raw: string) {
   const out: { service_token?: string; user_id?: string; ph?: string } = {}
@@ -42,6 +53,7 @@ export function ConfigPanel() {
   const [saved, setSaved] = useState(false)
   const [defaultModel, setDefaultModel] = useState('mimo-v2.6-pro')
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [statuses, setStatuses] = useState<Record<string, AccountStatus>>({})
   const [loading, setLoading] = useState(true)
 
   // Add form state
@@ -53,7 +65,22 @@ export function ConfigPanel() {
   const [adding, setAdding] = useState(false)
   const [importText, setImportText] = useState('')
 
+  // 账号健康状态与配置分开拉：状态会变，配置不会。
+  // 失败时静默保留上一次结果——面板显示不了状态不该弹错误框。
+  const loadStatus = () => {
+    apiFetch('/admin/api/accounts/status')
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (!data?.accounts) return
+        const map: Record<string, AccountStatus> = {}
+        for (const st of data.accounts as AccountStatus[]) map[st.id] = st
+        setStatuses(map)
+      })
+      .catch(() => {})
+  }
+
   const loadConfig = (silent = false) => {
+    loadStatus()
     apiFetch('/admin/api/config')
       .then(r => {
         if (!r.ok) throw new Error(String(r.status))
@@ -84,9 +111,12 @@ export function ConfigPanel() {
     }
     document.addEventListener('visibilitychange', reload)
     window.addEventListener('focus', reload)
+    // 账号被摘除/恢复是后台事件，页面不会收到推送；可见时低频刷新够用
+    const timer = setInterval(reload, 15000)
     return () => {
       document.removeEventListener('visibilitychange', reload)
       window.removeEventListener('focus', reload)
+      clearInterval(timer)
     }
   }, [lang])
 
@@ -367,12 +397,39 @@ export function ConfigPanel() {
                         }`}>
                           {acc.active ? 'Active' : 'Disabled'}
                         </span>
+                        {acc.id && statuses[acc.id] && (() => {
+                          const st = statuses[acc.id]
+                          const tone = st.healthy
+                            ? 'bg-emerald-500/15 text-emerald-500'
+                            : st.probing
+                              ? 'bg-amber-500/15 text-amber-500'
+                              : 'bg-red-500/15 text-red-500'
+                          const dot = st.healthy ? 'bg-emerald-500' : st.probing ? 'bg-amber-400' : 'bg-red-500'
+                          const label = st.healthy
+                            ? (lang === 'zh' ? '正常' : 'Healthy')
+                            : st.probing
+                              ? (lang === 'zh' ? '试探中' : 'Probing')
+                              : (lang === 'zh' ? '已摘除' : 'Down')
+                          return (
+                            <span className={`px-2 py-0.5 rounded-md text-[10px] font-semibold flex items-center gap-1 ${tone}`}
+                              title={st.last_error || (lang === 'zh' ? '账号池实时状态' : 'Live pool status')}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+                              {label}{st.failures > 0 ? ` · ${st.failures}` : ''}
+                            </span>
+                          )
+                        })()}
                       </div>
                       <div className={`flex flex-wrap gap-x-4 gap-y-0.5 mt-1 text-xs ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
                         <span className="font-mono">user_id: {acc.user_id || '-'}</span>
                         <span className="font-mono">ph: {acc.ph || '-'}</span>
                         <span className="font-mono">token: {maskToken(acc.service_token)}</span>
                       </div>
+                      {acc.id && statuses[acc.id]?.last_error && !statuses[acc.id].healthy && (
+                        <p className={`mt-1 text-[11px] font-mono truncate ${isDark ? 'text-red-400/80' : 'text-red-500/80'}`}
+                          title={statuses[acc.id].last_error}>
+                          {statuses[acc.id].last_error}
+                        </p>
+                      )}
                     </div>
 
                     <motion.button onClick={() => handleDelete(acc.id)}

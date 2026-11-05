@@ -18,4 +18,6 @@ export const suiteNames = [
   'e2e/tools',
   'e2e/channels',
   'e2e/resilience',
+  'e2e/streaming',
+  'e2e/logging',
 ];

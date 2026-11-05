@@ -222,6 +222,9 @@ curl http://localhost:8080/v1/messages \
 - 🔧 **工具调用** — OpenAI / Anthropic 双格式 tools，注入格式说明 + DSML/XML 解析，三模型实测可用
 - 🖼️ **图片与文本文件输入** — 按上游资源接口上传并绑定对话，三模型均可识图；相同内容走缓存
 - 🔥 **多协议兼容** — `/v1/chat/completions`、`/v1/responses`、`/v1/messages`（均含流式）
+- ⚡ **真流式** — 上游 SSE 出一段就转发一段，首字延迟等于上游首字延迟，而不是整段生成时间；思考链与正文按各自协议增量下发，工具标记跨 chunk 也不会漏进正文
+- 🩺 **账号自愈** — 登录态失效（401/403/451）即时摘除、其它错误连续 3 次摘除；冷却 2 分钟后半开试探，成功后自动回到轮转
+- 🧾 **结构化日志** — 每行一条 JSONL，落到 `data/logs/YYYY-MM-DD.log`；响应头带 `X-Request-ID`，**超过 7 天自动删除**，凭据永不落盘
 - 🔁 **会话复用（增量发送）** — 首轮发完整上下文，后续轮次只发新消息，依赖上游服务端上下文。与网页端行为一致：实测 12 轮 agent 会话平均 query 仅 240 字符（全量重放需 70K+），长任务不再撞长度限制
 - 🧠 **思考模式** — OpenAI 侧 `reasoning_effort`（low/medium/high）、Anthropic 侧 `thinking.budget_tokens` 都能开启并映射到上游档位；思考内容以 `reasoning_content` / `thinking` 块透传，不混进正文
 - 📉 **上下文压缩** — query 接近上游长度上限时，先把历史压成摘要再拼最近原文，避免纯截断丢掉关键约束
@@ -261,6 +264,26 @@ curl http://localhost:8080/v1/messages \
 
 环境变量（可选）：`PORT`、`API_KEY`、`CONFIG_PATH`、`NO_BROWSER_OPEN=1`（禁止启动时自动开浏览器）。
 
+日志相关（可选）：
+
+| 变量 | 说明 | 默认 |
+|---|---|---|
+| `LOG_LEVEL` | `debug` / `info` / `warn` / `error` | `info` |
+| `LOG_RETENTION_DAYS` | 日志保留天数，超期文件自动删除 | `7` |
+| `LOG_CONSOLE` | 设为 `0` 时只写文件、不输出到控制台 | 输出 |
+
+## 日志
+
+日志写在 `<程序目录>/data/logs/YYYY-MM-DD.log`（macOS `.app` 下是 `~/Library/Application Support/mimo-web2api/data/logs`），按天切分，每行一条 JSONL：
+
+```json
+{"ts":"2026-11-05T10:12:33.412+08:00","level":"info","msg":"http_request","req_id":"9f3c1a2b4d5e","method":"POST","path":"/v1/chat/completions","status":200,"dur_ms":1834,"bytes":812,"model":"mimo-v2.6-pro","stream":true,"account":"acc-1","prompt_tokens":1200,"completion_tokens":340}
+```
+
+- 每次响应都带 `X-Request-ID`，出问题时拿它 `grep` 同一个 `req_id` 就能串起整条链路。
+- 保留期外的文件在启动时和运行中每 6 小时各清理一次，中途不重启也不会堆积。
+- `serviceToken`、`ph`、`user_id` 一律脱敏（`***`），也不记录 prompt 正文，只记长度与 token 数。
+
 ## 管理接口
 
 | 端点 | 说明 |
@@ -269,8 +292,10 @@ curl http://localhost:8080/v1/messages \
 | `POST /admin/api/config` | 更新默认模型 |
 | `POST /admin/api/accounts` | 新增或更新账号（四项必填；同 `user_id` 覆盖，返回 `{status: added\|updated, id}`） |
 | `DELETE /admin/api/accounts` | 按 `id` 删除账号 |
-| `GET /admin/api/health` | 账号健康检查 |
+| `GET /admin/api/health` | 账号健康检查（会真的打上游，较慢） |
+| `GET /admin/api/accounts/status` | 账号池实时状态（健康/试探中/失败次数/最后错误），只读不打上游 |
 | `GET /admin/api/stats` | 用量统计 |
+| `GET /admin/api/logs?lines=200` | 当天日志尾部（JSONL 字符串数组），排查用 |
 
 面板首次使用时在设置里填一次 API Key（存于浏览器 localStorage，只在你本机）。
 
@@ -331,7 +356,7 @@ npm run extension     # 浏览器扩展与管理接口的契约（幂等覆盖�
 
 **Q: 和官方 API 的区别？** 官方 API 有付费额度限制；本代理走网页端免费额度，但无 SLA。
 
-**Q: 支持流式吗？** 支持，`"stream": true` 即可。
+**Q: 支持流式吗？** 支持，`"stream": true` 即可，而且是真的边收边发：上游每吐一段，客户端立刻收到一段（首字延迟 ≈ 上游首字延迟）。15 秒没有新内容时会发 SSE 注释帧保活，避免中间层或客户端 idle 超时。
 
 **Q: 工具调用一直不触发？** 上游网页端没有原生 tools 参数，网关靠注入提示词约定调用格式。模型偶尔会选择直接回答而不调工具（尤其是问题看起来能凭记忆回答时）。客户端 system prompt 里明确要求使用工具会显著提高触发率。
 

@@ -3,9 +3,11 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/teddyli18000/mimo-web2api/internal/config"
+	"github.com/teddyli18000/mimo-web2api/internal/logging"
 	"github.com/teddyli18000/mimo-web2api/internal/pool"
 	"github.com/teddyli18000/mimo-web2api/internal/stats"
 )
@@ -128,6 +130,28 @@ func (h *AdminHandler) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 func (h *AdminHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, h.pool.HealthCheck(r.Context()))
+}
+
+// AccountsStatus 返回每个账号的健康状态、失败次数与最后一次错误。
+// 只读、不发网络请求：面板轮询它不会打到上游。
+func (h *AdminHandler) AccountsStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]interface{}{"accounts": h.pool.Status()})
+}
+
+// Logs 返回当天日志的尾部若干行，供面板/命令行排查。
+func (h *AdminHandler) Logs(w http.ResponseWriter, r *http.Request) {
+	n := 200
+	if v := r.URL.Query().Get("lines"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			n = parsed
+		}
+	}
+	lines, err := logging.Tail(n)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	writeJSON(w, map[string]interface{}{"lines": lines})
 }
 
 // GetStats 返回 token 用量统计

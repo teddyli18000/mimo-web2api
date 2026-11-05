@@ -87,6 +87,7 @@ export async function startGateway({
   readyTimeout = 30_000,
   blockExternal = true,
   attempts = 4,
+  prepare,
 } = {}) {
   const exeSource = bin || defaultBinary();
   await access(exeSource).catch(() => {
@@ -115,6 +116,10 @@ export async function startGateway({
       default_model: 'mimo-v2.6-pro',
       accounts,
     }, null, 2));
+
+    // prepare 在 spawn 之前跑：日志清理这类「启动时才生效」的行为需要
+    // 提前往临时目录里放种子文件（data/logs/...），否则永远测不到。
+    if (prepare) await prepare(dir);
 
     const child = spawn(exe, [], {
       cwd: dir,

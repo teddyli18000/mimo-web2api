@@ -285,7 +285,7 @@ func (c *WebClient) Chat(ctx context.Context, query, model, conversationID, pare
 			log.Printf("[retry] mimo %d: retry budget exhausted (%v left), giving up after %d attempts",
 				resp.StatusCode, time.Until(deadline).Round(time.Second), attempt+1)
 		}
-		return nil, fmt.Errorf("mimo returned %d: %s", resp.StatusCode, string(errBody))
+		return nil, &HTTPError{Status: resp.StatusCode, Body: string(errBody)}
 	}
 }
 

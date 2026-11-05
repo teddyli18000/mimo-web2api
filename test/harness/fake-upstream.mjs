@@ -129,8 +129,26 @@ async function chat(req, res, state, path) {
   }
 
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  // 立刻把头送出去：真流式用例要测「首块早于末块」，
+  // 如果头等到第一次 write 才发，TTFB 会被上游自己的攒批污染。
+  res.flushHeaders?.();
 
   if (script.raw !== undefined) return res.end(script.raw);
+
+  // 分段慢吐：chunks 里每一项是一帧（event+data）或直接 raw，
+  // delayMs 表示写这一帧之前等多久。没有这个能力就只能整段 end()，
+  // 「网关是不是边收边发」根本测不出来。
+  if (script.chunks) {
+    for (const c of script.chunks) {
+      if (c.delayMs) await sleep(c.delayMs);
+      if (c.raw !== undefined) {
+        res.write(c.raw);
+        continue;
+      }
+      res.write(frame({ id: c.id, event: c.event, data: c.data }));
+    }
+    return res.end();
+  }
 
   let out = '';
   if (script.events) {

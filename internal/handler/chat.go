@@ -16,6 +16,7 @@ import (
 	"github.com/teddyli18000/mimo-web2api/internal/adapter"
 	"github.com/teddyli18000/mimo-web2api/internal/config"
 	"github.com/teddyli18000/mimo-web2api/internal/convstore"
+	"github.com/teddyli18000/mimo-web2api/internal/logging"
 	"github.com/teddyli18000/mimo-web2api/internal/mimo"
 	"github.com/teddyli18000/mimo-web2api/internal/pool"
 	"github.com/teddyli18000/mimo-web2api/internal/router"
@@ -80,128 +81,22 @@ func randomHex32() string {
 	return hex.EncodeToString(b)
 }
 
+// collectWebResult 收集完整结果（非流式路径，以及压缩等内部调用）。
 func collectWebResult(ctx context.Context, client *mimo.WebClient, query, model, convID, parentID string, medias []interface{}, thinking bool, reasoningEffort string) (webResult, error) {
-	body, err := client.Chat(ctx, query, model, convID, parentID, thinking, medias, reasoningEffort)
-	if err != nil {
-		return webResult{}, err
-	}
-	return collectWebResultFromReader(ctx, body)
+	return runWebStream(ctx, client, chatArgs{
+		query:    query,
+		model:    model,
+		convID:   convID,
+		parentID: parentID,
+		medias:   medias,
+		thinking: thinking,
+		effort:   reasoningEffort,
+	}, streamHandlers{})
 }
 
+// collectWebResultFromReader 只有收集需求时的入口（单测直接用内存 reader 造 SSE）。
 func collectWebResultFromReader(ctx context.Context, reader io.ReadCloser) (webResult, error) {
-	// 可取消：读流空闲超时需要主动中断底层的 SSE 解析
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	events := make(chan mimo.WebSSEEvent, 64)
-	errChan := make(chan error, 1)
-	go func() {
-		defer close(events)
-		errChan <- mimo.ParseWebSSE(ctx, reader, events)
-	}()
-
-	var (
-		content     strings.Builder
-		reasoning   strings.Builder
-		inThinking  bool
-		lastUsage   *usageData
-		lastMsgID   string
-		upstreamErr string
-	)
-
-	// 读流空闲超时：上游可能建连后长时间不吐数据，没有这个上界时整个请求会一直
-	// 挂到客户端自己的超时（实测出现过 pi-ai "stream idle timeout after 300000ms"）。
-	idle := time.NewTimer(sseIdleTimeout)
-	defer idle.Stop()
-
-collect:
-	for {
-		select {
-		case <-idle.C:
-			cancel()
-			return webResult{}, fmt.Errorf("upstream stalled: no SSE event for %v", sseIdleTimeout)
-		case <-ctx.Done():
-			return webResult{}, ctx.Err()
-		case ev, ok := <-events:
-			if !ok {
-				break collect
-			}
-			idle.Reset(sseIdleTimeout)
-			switch ev.Event {
-			case "dialogId":
-				// v3：这一轮响应的 dialogId，下一轮要作为 previousDialogueId 回传
-				var d struct {
-					Content string `json:"content"`
-				}
-				if err := json.Unmarshal([]byte(ev.Data), &d); err == nil && d.Content != "" {
-					lastMsgID = d.Content
-				}
-			case "message":
-				if ev.ID != "" {
-					lastMsgID = ev.ID
-				}
-				var msg struct {
-					Type             string `json:"type"`
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoningContent"`
-				}
-				if err := json.Unmarshal([]byte(ev.Data), &msg); err != nil {
-					continue
-				}
-				// v3 的思考链单独放在 reasoningContent：不混进正文，但原样记下来，
-				// 后面以 reasoning_content 字段透传给客户端（DeepSeek 系客户端认这个）。
-				if msg.ReasoningContent != "" {
-					reasoning.WriteString(msg.ReasoningContent)
-				}
-				// v2 是 type=text；v3 不再带 type，正文在 content。
-				if msg.Content != "" && (msg.Type == "" || msg.Type == "text") {
-					c := strings.ReplaceAll(msg.Content, "\u0000", "")
-					c, inThinking = filterThinkingChunk(c, inThinking)
-					if c != "" {
-						content.WriteString(c)
-					}
-				}
-			case "error":
-				var e struct {
-					Type    string `json:"type"`
-					Content string `json:"content"`
-					Message string `json:"message"`
-				}
-				if err := json.Unmarshal([]byte(ev.Data), &e); err == nil {
-					if e.Content != "" {
-						upstreamErr = e.Content
-					} else if e.Message != "" {
-						upstreamErr = e.Message
-					}
-				}
-			case "finish":
-				// v3 用 finish 事件 + data {"content":"[DONE]"} 收尾，不必等连接关闭
-				var f struct {
-					Content string `json:"content"`
-				}
-				if err := json.Unmarshal([]byte(ev.Data), &f); err == nil && f.Content == "[DONE]" {
-					break collect
-				}
-			case "usage":
-				var u usageData
-				if err := json.Unmarshal([]byte(ev.Data), &u); err == nil {
-					lastUsage = &u // 覆盖：以最后一个 usage 为准（fastchat 多 usage 事件规避）
-				}
-			}
-		}
-	}
-
-	if err := <-errChan; err != nil && ctx.Err() != nil {
-		return webResult{}, err
-	}
-
-	return webResult{
-		Text:        content.String(),
-		Reasoning:   reasoning.String(),
-		Usage:       lastUsage,
-		LastMsgID:   lastMsgID,
-		UpstreamErr: upstreamErr,
-	}, nil
+	return consumeWebStream(ctx, reader, streamHandlers{})
 }
 
 func (h *ChatHandler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -212,6 +107,8 @@ func (h *ChatHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	routeResult := router.RouteModel(req.Model, config.Get().DefaultModel)
+	logging.Set(r.Context(), "model", routeResult.Model)
+	logging.Set(r.Context(), "stream", req.Stream)
 	log.Printf("[route] model=%s reason=%s", routeResult.Model, routeResult.Reason)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
@@ -237,6 +134,7 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
+	logging.Set(ctx, "account", h.pool.AccountID(client))
 
 	// 组装 (role, text) 序列供 fingerprint 与 serialize 共用
 	roleTexts := toRoleTexts(req.Messages)
@@ -323,29 +221,98 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 	replacedFrom := "" // 非空表示空响应重试换过会话，成功后需迁移映射
 	var result webResult
 
+	// 流式输出端。响应头懒发：拿到第一段内容之前，错误仍能按正常 HTTP 状态码返回；
+	// 一旦写过任何字节（含 keepalive / role 帧），就只能按协议发错误帧了。
+	streamID := adapter.NewStreamID()
+	var (
+		sw    *sseWriter
+		guard *toolcall.MarkerGuard
+	)
+	if stream {
+		sw = newSSEWriter(w)
+		defer sw.Stop()
+		// 真实 OpenAI 流的首帧声明 assistant role，必须早于任何正文
+		sw.SetPrelude(openAIFrame(adapter.MakeOpenAIStreamRoleChunk(streamID, model)))
+	}
+
+	onReasoning := func(delta string) error {
+		if sw == nil {
+			return nil
+		}
+		return sw.Event(adapter.MakeOpenAIStreamReasoningChunk(streamID, model, delta))
+	}
+	onContent := func(delta string) error {
+		if sw == nil {
+			return nil
+		}
+		if guard == nil {
+			guard = toolcall.NewMarkerGuard()
+		}
+		safe, _ := guard.Write(delta)
+		if safe == "" {
+			return nil
+		}
+		return sw.Event(adapter.MakeOpenAIStreamContentChunk(streamID, model, safe))
+	}
+
+	args := chatArgs{
+		medias:   medias,
+		thinking: req.ReasoningEffort != "",
+		effort:   req.ReasoningEffort,
+	}
+
 	for attempt := 0; attempt < 2; attempt++ {
+		args.query = query
+		args.model = model
+		args.convID = curConvID
+		args.parentID = curParentID
+
 		var err error
-		result, err = collectWebResult(ctx, client, query, model, curConvID, curParentID, medias, req.ReasoningEffort != "", req.ReasoningEffort)
+		result, err = runWebStream(ctx, client, args, streamHandlers{
+			OnStart: func() {
+				if sw != nil {
+					go sw.Keepalive(ctx, sseKeepaliveInterval)
+				}
+			},
+			OnReasoning: onReasoning,
+			OnContent:   onContent,
+		})
 		if err != nil {
+			reportAccount(h.pool, client, err)
 			log.Printf("[error] web chat (attempt %d): %v", attempt+1, err)
 			status, msg := upstreamErrorStatus(err.Error())
+			// 已经写过字节：状态码回不去了，只能按协议收尾
+			if sw != nil && sw.Committed() {
+				writeOpenAIStreamError(sw, "mimo error: "+msg)
+				return
+			}
+			abortStream(sw)
 			writeError(w, status, "mimo error: "+msg)
 			return
 		}
+
+		// 能拿到上游事件流就说明账号是活的（业务层面的拒绝不算账号故障）
+		h.pool.Report(client, nil)
 
 		// 上游业务错误（文本超长/风控等）一律报错，即使已经吐了部分正文：
 		// 把截断内容当成功返回，agent 客户端会据此继续往下走。
 		if result.UpstreamErr != "" {
 			log.Printf("[error] mimo upstream error (partial len=%d): %s", len(result.Text), result.UpstreamErr)
 			status, msg := upstreamErrorStatus(result.UpstreamErr)
+			if sw != nil && sw.Committed() {
+				writeOpenAIStreamError(sw, "mimo: "+msg)
+				return
+			}
+			abortStream(sw)
 			writeError(w, status, "mimo: "+msg)
 			return
 		}
 
 		// 空响应重试：首次尝试若为空且无明确错误，换全新 conversationId 重试一次。
 		// 重试必须改用【完整上下文】——新会话没有服务端历史，只发增量会答非所问。
+		// 已经吐过正文就不能重试：客户端会看到重复内容（参考实现 handler.py 同款约束）。
 		if isWebResultEmpty(result) {
-			if attempt == 0 {
+			if attempt == 0 && (sw == nil || !sw.ContentSent()) {
 				log.Printf("[retry] empty response on convID=%s, retrying with full context", curConvID[:min(len(curConvID), 8)])
 				replacedFrom = curConvID
 				curConvID = randomHex32()
@@ -354,6 +321,11 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 				continue
 			}
 			log.Printf("[error] mimo returned an empty response after retry")
+			if sw != nil && sw.Committed() {
+				writeOpenAIStreamError(sw, "mimo returned an empty response (after retry)")
+				return
+			}
+			abortStream(sw)
 			writeError(w, http.StatusBadGateway, "mimo returned an empty response (after retry)")
 			return
 		}
@@ -382,6 +354,8 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 			}
 		}
 		stats.Get().Record(model, u.PromptTokens, u.CompletionTokens, cached, reasoning, u.TotalTokens)
+		logging.Set(ctx, "prompt_tokens", u.PromptTokens)
+		logging.Set(ctx, "completion_tokens", u.CompletionTokens)
 		log.Printf("[usage] model=%s prompt=%d completion=%d cached=%d reasoning=%d",
 			model, u.PromptTokens, u.CompletionTokens, cached, reasoning)
 		openaiUsage = &adapter.OpenAIUsage{
@@ -400,8 +374,10 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 		log.Printf("[conv] updated parentId for convID=%s: %s", curConvID[:8], result.LastMsgID[:min(len(result.LastMsgID), 8)])
 	}
 
-	// 检测是否包含工具调用
+	// 检测是否包含工具调用。
+	// 流式下工具标记已经被 MarkerGuard 扣押，这里只决定结尾怎么收。
 	finalText := strings.TrimSpace(result.Text)
+	var toolCalls []adapter.OpenAIToolCall
 	if toolcall.HasToolCallSyntax(finalText) {
 		calls := toolcall.ParseToolCallsFromText(finalText)
 		log.Printf("[tools] parsed %d calls from text", len(calls))
@@ -409,59 +385,75 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 			log.Printf("[tools] call[%d]: name=%s input=%v", i, c.Name, c.Input)
 		}
 		if len(calls) > 0 {
-			toolCalls := toolcall.ConvertToolCallsToOpenAI(calls)
+			toolCalls = toolcall.ConvertToolCallsToOpenAI(calls)
 			log.Printf("[tools] detected %d tool calls in response", len(toolCalls))
-			if stream {
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.Header().Set("Cache-Control", "no-cache")
-				streamID := adapter.NewStreamID()
-				fmt.Fprintf(w, "data: %s\n\n", adapter.MakeOpenAIStreamToolCallChunk(streamID, model, toolcall.StripToolCallSyntax(finalText), toolCalls))
-				if openaiUsage != nil {
-					fmt.Fprintf(w, "data: %s\n\n", adapter.MakeOpenAIStreamUsageChunk(streamID, model, openaiUsage))
-				}
-				fmt.Fprintf(w, "data: [DONE]\n\n")
-				if f, ok := w.(http.Flusher); ok {
-					f.Flush()
-				}
-				return
-			} else {
-				respBody := adapter.MakeOpenAIToolCallResponse(model, toolcall.StripToolCallSyntax(finalText), toolCalls)
-				if openaiUsage != nil {
-					var m map[string]interface{}
-					if json.Unmarshal(respBody, &m) == nil {
-						m["usage"] = openaiUsage
-						respBody, _ = json.Marshal(m)
-					}
-				}
-				w.Header().Set("Content-Type", "application/json")
-				w.Write(respBody)
-				return
-			}
 		}
 	}
 
-	// 输出正文
 	if stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		streamID := adapter.NewStreamID()
-		if result.Reasoning != "" {
-			fmt.Fprintf(w, "data: %s\n\n", adapter.MakeOpenAIStreamReasoningChunk(streamID, model, result.Reasoning))
+		if len(toolCalls) > 0 {
+			// 标记之前的说明文字先补发（守卫会连它一起扣住）
+			if guard != nil {
+				if pre := guard.FlushPrefix(); pre != "" {
+					if err := sw.Event(adapter.MakeOpenAIStreamContentChunk(streamID, model, pre)); err != nil {
+						return
+					}
+				}
+			}
+			// 两阶段下发：先 id/name，再 arguments 分片——与真实 OpenAI 一致，
+			// 增量解析型客户端（Claude Code 等）只认这种形状。
+			if err := sw.Event(adapter.MakeOpenAIStreamToolCallStartChunk(streamID, model, toolCalls)); err != nil {
+				return
+			}
+			for i, tc := range toolCalls {
+				if tc.Function.Arguments == "" {
+					continue
+				}
+				if err := sw.Event(adapter.MakeOpenAIStreamToolCallArgsChunk(streamID, model, i, tc.Function.Arguments)); err != nil {
+					return
+				}
+			}
+			if err := sw.Event(adapter.MakeOpenAIStreamFinishReasonChunk(streamID, model, "tool_calls")); err != nil {
+				return
+			}
+		} else {
+			// 没解析出工具调用：把守卫扣押的尾巴补发完
+			// （含「命中标记但解析失败」的误判场景，不能丢字）
+			if guard != nil {
+				if rest := guard.Flush(); rest != "" {
+					if err := sw.Event(adapter.MakeOpenAIStreamContentChunk(streamID, model, rest)); err != nil {
+						return
+					}
+				}
+			}
+			if err := sw.Event(adapter.MakeOpenAIStreamFinishChunk(streamID, model)); err != nil {
+				return
+			}
 		}
-		fmt.Fprintf(w, "data: %s\n\n", adapter.MakeOpenAIStreamContentChunk(streamID, model, result.Text))
-		fmt.Fprintf(w, "data: %s\n\n", adapter.MakeOpenAIStreamFinishChunk(streamID, model))
 		if openaiUsage != nil {
-			fmt.Fprintf(w, "data: %s\n\n", adapter.MakeOpenAIStreamUsageChunk(streamID, model, openaiUsage))
+			_ = sw.Event(adapter.MakeOpenAIStreamUsageChunk(streamID, model, openaiUsage))
 		}
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
+		_ = sw.Raw("data: [DONE]\n\n")
+		return
+	}
+
+	if len(toolCalls) > 0 {
+		respBody := adapter.MakeOpenAIToolCallResponse(model, toolcall.StripToolCallSyntax(finalText), toolCalls)
+		if openaiUsage != nil {
+			var m map[string]interface{}
+			if json.Unmarshal(respBody, &m) == nil {
+				m["usage"] = openaiUsage
+				respBody, _ = json.Marshal(m)
+			}
 		}
-	} else {
-		respBody := adapter.MakeOpenAIResponseWithUsage(model, result.Text, result.Reasoning, openaiUsage)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(respBody)
+		return
 	}
+
+	respBody := adapter.MakeOpenAIResponseWithUsage(model, result.Text, result.Reasoning, openaiUsage)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(respBody)
 }
 
 // filterThinkingChunk 状态机方式过滤 thinking 内容
@@ -578,6 +570,9 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	routeResult := router.RouteModel(req.Model, config.Get().DefaultModel)
+	logging.Set(r.Context(), "model", routeResult.Model)
+	logging.Set(r.Context(), "stream", req.Stream)
+	logging.Set(r.Context(), "protocol", "anthropic")
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
@@ -592,6 +587,7 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
+	logging.Set(ctx, "account", h.pool.AccountID(client))
 
 	// 组装 (role, text) 序列供 fingerprint 与 serialize 共用
 	systemText := adapter.NormalizeContent(req.System)
@@ -683,27 +679,193 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	replacedFrom := "" // 非空表示空响应重试换过会话，成功后需迁移映射
 	var result webResult
 
-	for attempt := 0; attempt < 2; attempt++ {
-		var err error
-		result, err = collectWebResult(ctx, client, query, routeResult.Model, curConvID, curParentID, mediasA, thinkingA, effortA)
+	// 流式状态：内容块索引懒分配。
+	// Anthropic 要求 message_start 先于所有 content_block，且块顺序不可回退，
+	// 所以 thinking 块先开（index 0），正文到来时先关它再开 text 块（index 1）。
+	var (
+		sw       *sseWriter
+		guard    *toolcall.MarkerGuard
+		msgID    = fmt.Sprintf("msg_%s", uuid.New().String()[:24])
+		nextIdx  int
+		thinkIdx = -1
+		textIdx  = -1
+		thinkOpn bool
+		textOpn  bool
+		// messageStarted 单独记：keepalive 可能已经写过响应头，
+		// 但 message_start 事件必须且只能发一次。
+		messageStarted bool
+	)
+	if req.Stream {
+		sw = newSSEWriter(w)
+		defer sw.Stop()
+	}
+
+	startMessage := func() error {
+		if sw == nil || messageStarted {
+			return nil
+		}
+		messageStarted = true
+		// input_tokens 此刻还不知道（上游 usage 在流末尾），先发 0；
+		// message_delta 会补 output_tokens，与参考实现 meny2333 一致。
+		return sw.EventName("message_start", adapter.MakeAnthropicStreamEvent("message_start", map[string]interface{}{
+			"type": "message_start",
+			"message": map[string]interface{}{
+				"id":            msgID,
+				"type":          "message",
+				"role":          "assistant",
+				"model":         routeResult.Model,
+				"content":       []interface{}{},
+				"stop_reason":   nil,
+				"stop_sequence": nil,
+				"usage":         map[string]interface{}{"input_tokens": 0, "output_tokens": 0},
+			},
+		}))
+	}
+
+	openBlock := func(kind string, initial map[string]interface{}) (int, error) {
+		idx := nextIdx
+		nextIdx++
+		block := map[string]interface{}{"type": kind}
+		for k, v := range initial {
+			block[k] = v
+		}
+		err := sw.EventName("content_block_start", adapter.MakeAnthropicStreamEvent("content_block_start", map[string]interface{}{
+			"type":          "content_block_start",
+			"index":         idx,
+			"content_block": block,
+		}))
+		return idx, err
+	}
+
+	closeBlock := func(idx int) error {
+		return sw.EventName("content_block_stop", adapter.MakeAnthropicStreamEvent("content_block_stop", map[string]interface{}{
+			"type":  "content_block_stop",
+			"index": idx,
+		}))
+	}
+
+	ensureText := func() error {
+		if textOpn {
+			return nil
+		}
+		if thinkOpn {
+			if err := closeBlock(thinkIdx); err != nil {
+				return err
+			}
+			thinkOpn = false
+		}
+		idx, err := openBlock("text", map[string]interface{}{"text": ""})
 		if err != nil {
+			return err
+		}
+		textIdx, textOpn = idx, true
+		return nil
+	}
+
+	writeText := func(delta string) error {
+		if delta == "" {
+			return nil
+		}
+		if err := startMessage(); err != nil {
+			return err
+		}
+		if err := ensureText(); err != nil {
+			return err
+		}
+		return sw.EventName("content_block_delta", adapter.MakeAnthropicStreamEvent("content_block_delta", map[string]interface{}{
+			"type":  "content_block_delta",
+			"index": textIdx,
+			"delta": map[string]interface{}{"type": "text_delta", "text": delta},
+		}))
+	}
+
+	onReasoning := func(delta string) error {
+		if sw == nil {
+			return nil
+		}
+		if err := startMessage(); err != nil {
+			return err
+		}
+		if thinkIdx < 0 {
+			idx, err := openBlock("thinking", map[string]interface{}{"thinking": "", "signature": ""})
+			if err != nil {
+				return err
+			}
+			thinkIdx, thinkOpn = idx, true
+		}
+		return sw.EventName("content_block_delta", adapter.MakeAnthropicStreamEvent("content_block_delta", map[string]interface{}{
+			"type":  "content_block_delta",
+			"index": thinkIdx,
+			"delta": map[string]interface{}{"type": "thinking_delta", "thinking": delta},
+		}))
+	}
+
+	onContent := func(delta string) error {
+		if sw == nil {
+			return nil
+		}
+		if guard == nil {
+			guard = toolcall.NewMarkerGuard()
+		}
+		safe, _ := guard.Write(delta)
+		return writeText(safe)
+	}
+
+	argsA := chatArgs{
+		model:    routeResult.Model,
+		medias:   mediasA,
+		thinking: thinkingA,
+		effort:   effortA,
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		argsA.query = query
+		argsA.convID = curConvID
+		argsA.parentID = curParentID
+
+		var err error
+		result, err = runWebStream(ctx, client, argsA, streamHandlers{
+			OnStart: func() {
+				if sw != nil {
+					go sw.Keepalive(ctx, sseKeepaliveInterval)
+				}
+			},
+			OnReasoning: onReasoning,
+			OnContent:   onContent,
+		})
+		if err != nil {
+			reportAccount(h.pool, client, err)
 			log.Printf("[error] Anthropic web chat (attempt %d): %v", attempt+1, err)
 			status, msg := upstreamErrorStatus(err.Error())
+			if sw != nil && sw.Committed() {
+				writeAnthropicStreamError(sw, msg)
+				return
+			}
+			abortStream(sw)
 			writeAnthropicError(w, status, msg)
 			return
 		}
+
+		// 能拿到上游事件流就说明账号是活的（业务层面的拒绝不算账号故障）
+		h.pool.Report(client, nil)
 
 		// 上游业务错误一律报错，即使已有部分正文（同 OpenAI 路径）
 		if result.UpstreamErr != "" {
 			log.Printf("[error] Anthropic mimo upstream error (partial len=%d): %s", len(result.Text), result.UpstreamErr)
 			status, msg := upstreamErrorStatus(result.UpstreamErr)
+			if sw != nil && sw.Committed() {
+				writeAnthropicStreamError(sw, "mimo: "+msg)
+				return
+			}
+			abortStream(sw)
 			writeAnthropicError(w, status, "mimo: "+msg)
 			return
 		}
 
-		// 空响应重试：首次尝试若为空且无明确错误，换全新 conversationId 重试一次
+		// 空响应重试：首次尝试若为空且无明确错误，换全新 conversationId 重试一次。
+		// 已经吐过正文就不能重试（客户端会看到重复内容）。
 		if isWebResultEmpty(result) {
-			if attempt == 0 {
+			if attempt == 0 && (sw == nil || !sw.ContentSent()) {
 				log.Printf("[retry] Anthropic empty response on convID=%s, retrying with full context", curConvID[:min(len(curConvID), 8)])
 				replacedFrom = curConvID
 				curConvID = randomHex32()
@@ -712,6 +874,11 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			log.Printf("[error] Anthropic mimo returned an empty response after retry")
+			if sw != nil && sw.Committed() {
+				writeAnthropicStreamError(sw, "mimo returned an empty response (after retry)")
+				return
+			}
+			abortStream(sw)
 			writeAnthropicError(w, http.StatusBadGateway, "mimo returned an empty response (after retry)")
 			return
 		}
@@ -737,6 +904,8 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		stats.Get().Record(routeResult.Model, u.PromptTokens, u.CompletionTokens, cached, reasoning, u.TotalTokens)
+		logging.Set(ctx, "prompt_tokens", u.PromptTokens)
+		logging.Set(ctx, "completion_tokens", u.CompletionTokens)
 		inTokens = u.PromptTokens
 		outTokens = u.CompletionTokens
 	}
@@ -751,194 +920,167 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	finalText := strings.TrimSpace(result.Text)
+	var calls []toolcall.ParsedToolCall
 	if hasTools && toolcall.HasToolCallSyntax(finalText) {
-		calls := toolcall.ParseToolCallsFromText(finalText)
+		calls = toolcall.ParseToolCallsFromText(finalText)
 		log.Printf("[tools] Anthropic: parsed %d calls (raw len=%d): %q",
 			len(calls), len(finalText), finalText[:min(len(finalText), 400)])
-		if len(calls) > 0 {
-			if req.Stream {
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.Header().Set("Cache-Control", "no-cache")
-				w.WriteHeader(http.StatusOK)
-				flusher, _ := w.(http.Flusher)
-
-				// Send message_start event（Anthropic 协议要求含 content/stop_reason/usage）
-				startMsg := map[string]interface{}{
-					"type": "message_start",
-					"message": map[string]interface{}{
-						"id":            fmt.Sprintf("msg_%s", uuid.New().String()[:24]),
-						"type":          "message",
-						"role":          "assistant",
-						"model":         routeResult.Model,
-						"content":       []interface{}{},
-						"stop_reason":   nil,
-						"stop_sequence": nil,
-						"usage":         map[string]interface{}{"input_tokens": inTokens, "output_tokens": 0},
-					},
-				}
-				fmt.Fprintf(w, "event: message_start\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("message_start", startMsg))
-
-				// Send tool_use blocks as streaming events
-				for i, c := range calls {
-					blockIdx := i
-					block := adapter.AnthropicToolUseBlock{
-						Type:  "tool_use",
-						ID:    "toolu_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:24],
-						Name:  c.Name,
-						Input: c.Input,
-					}
-					toolStart := map[string]interface{}{
-						"type":  "content_block_start",
-						"index": blockIdx,
-						"content_block": map[string]interface{}{
-							"type":  "tool_use",
-							"id":    block.ID,
-							"name":  block.Name,
-							"input": map[string]interface{}{},
-						},
-					}
-					fmt.Fprintf(w, "event: content_block_start\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_start", toolStart))
-					// 参数按规范走 input_json_delta 增量下发：只在 start 里塞完整
-					// input 时，按增量解析的客户端会拿到空参数。
-					if raw, err := json.Marshal(block.Input); err == nil {
-						fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_delta", map[string]interface{}{
-							"type":  "content_block_delta",
-							"index": blockIdx,
-							"delta": map[string]interface{}{"type": "input_json_delta", "partial_json": string(raw)},
-						}))
-					}
-					fmt.Fprintf(w, "event: content_block_stop\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": blockIdx}))
-				}
-				fmt.Fprintf(w, "event: message_delta\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("message_delta", map[string]interface{}{
-					"type": "message_delta",
-					"delta": map[string]interface{}{
-						"stop_reason":   "tool_use",
-						"stop_sequence": nil,
-					},
-					"usage": map[string]interface{}{"output_tokens": outTokens},
-				}))
-				fmt.Fprintf(w, "event: message_stop\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("message_stop", nil))
-				if flusher != nil {
-					flusher.Flush()
-				}
-				return
-			} else {
-				blocks := make([]interface{}, 0, len(calls))
-				for _, c := range calls {
-					blocks = append(blocks, adapter.AnthropicToolUseBlock{
-						Type:  "tool_use",
-						ID:    "toolu_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:24],
-						Name:  c.Name,
-						Input: c.Input,
-					})
-				}
-				resp := map[string]interface{}{
-					"id":          fmt.Sprintf("msg_%s", uuid.New().String()[:24]),
-					"type":        "message",
-					"role":        "assistant",
-					"content":     blocks,
-					"model":       routeResult.Model,
-					"stop_reason": "tool_use",
-					"usage":       map[string]interface{}{"input_tokens": inTokens, "output_tokens": outTokens},
-				}
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(resp)
-				return
-			}
-		}
 	}
 
 	if req.Stream {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.WriteHeader(http.StatusOK)
-		flusher, _ := w.(http.Flusher)
-
-		// Send message_start event（Anthropic 协议要求含 content/stop_reason/usage）
-		startMsg := map[string]interface{}{
-			"type": "message_start",
-			"message": map[string]interface{}{
-				"id":            fmt.Sprintf("msg_%s", uuid.New().String()[:24]),
-				"type":          "message",
-				"role":          "assistant",
-				"model":         routeResult.Model,
-				"content":       []interface{}{},
-				"stop_reason":   nil,
-				"stop_sequence": nil,
-				"usage":         map[string]interface{}{"input_tokens": inTokens, "output_tokens": 0},
-			},
+		if err := startMessage(); err != nil {
+			return
 		}
-		fmt.Fprintf(w, "event: message_start\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("message_start", startMsg))
 
-		textIndex := 0
-		// 思考块固定在前：content_block_start(thinking) → thinking_delta → stop。
-		// signature 按官方格式给空串（上游没有签名，客户端也不会校验空值）。
-		if thinkingA && result.Reasoning != "" {
-			thinkStart := map[string]interface{}{
-				"type":  "content_block_start",
-				"index": 0,
-				"content_block": map[string]interface{}{
-					"type": "thinking", "thinking": "", "signature": "",
-				},
+		if len(calls) > 0 {
+			// 标记前的说明文字先补发（守卫会连它一起扣住）
+			if guard != nil {
+				if pre := guard.FlushPrefix(); pre != "" {
+					if err := writeText(pre); err != nil {
+						return
+					}
+				}
 			}
-			fmt.Fprintf(w, "event: content_block_start\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_start", thinkStart))
-			fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_delta", map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": 0,
-				"delta": map[string]interface{}{"type": "thinking_delta", "thinking": result.Reasoning},
+			// 关掉还开着的块，工具块从下一个索引继续
+			if thinkOpn {
+				if err := closeBlock(thinkIdx); err != nil {
+					return
+				}
+				thinkOpn = false
+			}
+			if textOpn {
+				if err := closeBlock(textIdx); err != nil {
+					return
+				}
+				textOpn = false
+			}
+			for _, c := range calls {
+				block := adapter.AnthropicToolUseBlock{
+					Type:  "tool_use",
+					ID:    "toolu_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:24],
+					Name:  c.Name,
+					Input: c.Input,
+				}
+				idx := nextIdx
+				nextIdx++
+				if err := sw.EventName("content_block_start", adapter.MakeAnthropicStreamEvent("content_block_start", map[string]interface{}{
+					"type":  "content_block_start",
+					"index": idx,
+					"content_block": map[string]interface{}{
+						"type":  "tool_use",
+						"id":    block.ID,
+						"name":  block.Name,
+						"input": map[string]interface{}{},
+					},
+				})); err != nil {
+					return
+				}
+				// 参数按规范走 input_json_delta：只在 start 里塞完整 input 时，
+				// 按增量解析的客户端会拿到空参数。
+				if raw, err := json.Marshal(block.Input); err == nil {
+					if err := sw.EventName("content_block_delta", adapter.MakeAnthropicStreamEvent("content_block_delta", map[string]interface{}{
+						"type":  "content_block_delta",
+						"index": idx,
+						"delta": map[string]interface{}{"type": "input_json_delta", "partial_json": string(raw)},
+					})); err != nil {
+						return
+					}
+				}
+				if err := closeBlock(idx); err != nil {
+					return
+				}
+			}
+			_ = sw.EventName("message_delta", adapter.MakeAnthropicStreamEvent("message_delta", map[string]interface{}{
+				"type": "message_delta",
+				"delta": map[string]interface{}{
+					"stop_reason":   "tool_use",
+					"stop_sequence": nil,
+				},
+				"usage": map[string]interface{}{"input_tokens": inTokens, "output_tokens": outTokens},
 			}))
-			fmt.Fprintf(w, "event: content_block_stop\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": 0}))
-			textIndex = 1
+			_ = sw.EventName("message_stop", adapter.MakeAnthropicStreamEvent("message_stop", nil))
+			return
 		}
 
-		textBlockStart := map[string]interface{}{
-			"type":          "content_block_start",
-			"index":         textIndex,
-			"content_block": map[string]interface{}{"type": "text", "text": ""},
+		// 普通正文：把守卫扣押的尾巴补发完
+		if guard != nil {
+			if rest := guard.Flush(); rest != "" {
+				if err := writeText(rest); err != nil {
+					return
+				}
+			}
 		}
-		fmt.Fprintf(w, "event: content_block_start\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_start", textBlockStart))
-		if result.Text != "" {
-			fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_delta", map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": textIndex,
-				"delta": map[string]interface{}{"type": "text_delta", "text": result.Text},
-			}))
+		// 至少给一个 text 块：即使一个字都没有，content 数组也得有形状
+		if err := ensureText(); err != nil {
+			return
 		}
-		// Close text content block
-		fmt.Fprintf(w, "event: content_block_stop\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": textIndex}))
-		fmt.Fprintf(w, "event: message_delta\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("message_delta", map[string]interface{}{
+		if thinkOpn {
+			if err := closeBlock(thinkIdx); err != nil {
+				return
+			}
+			thinkOpn = false
+		}
+		if textOpn {
+			if err := closeBlock(textIdx); err != nil {
+				return
+			}
+			textOpn = false
+		}
+		_ = sw.EventName("message_delta", adapter.MakeAnthropicStreamEvent("message_delta", map[string]interface{}{
 			"type": "message_delta",
 			"delta": map[string]interface{}{
 				"stop_reason":   "end_turn",
 				"stop_sequence": nil,
 			},
-			"usage": map[string]interface{}{"output_tokens": outTokens},
+			"usage": map[string]interface{}{"input_tokens": inTokens, "output_tokens": outTokens},
 		}))
-		fmt.Fprintf(w, "event: message_stop\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("message_stop", nil))
-		if flusher != nil {
-			flusher.Flush()
-		}
-	} else {
-		blocks := make([]interface{}, 0, 2)
-		if thinkingA && result.Reasoning != "" {
-			blocks = append(blocks, map[string]interface{}{
-				"type": "thinking", "thinking": result.Reasoning, "signature": "",
+		_ = sw.EventName("message_stop", adapter.MakeAnthropicStreamEvent("message_stop", nil))
+		return
+	}
+
+	if len(calls) > 0 {
+		blocks := make([]interface{}, 0, len(calls))
+		for _, c := range calls {
+			blocks = append(blocks, adapter.AnthropicToolUseBlock{
+				Type:  "tool_use",
+				ID:    "toolu_" + strings.ReplaceAll(uuid.New().String(), "-", "")[:24],
+				Name:  c.Name,
+				Input: c.Input,
 			})
 		}
-		blocks = append(blocks, map[string]interface{}{"type": "text", "text": finalText})
-
+		resp := map[string]interface{}{
+			"id":          fmt.Sprintf("msg_%s", uuid.New().String()[:24]),
+			"type":        "message",
+			"role":        "assistant",
+			"content":     blocks,
+			"model":       routeResult.Model,
+			"stop_reason": "tool_use",
+			"usage":       map[string]interface{}{"input_tokens": inTokens, "output_tokens": outTokens},
+		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":            fmt.Sprintf("msg_%s", uuid.New().String()[:24]),
-			"type":          "message",
-			"role":          "assistant",
-			"model":         routeResult.Model,
-			"content":       blocks,
-			"stop_reason":   "end_turn",
-			"stop_sequence": nil,
-			"usage":         map[string]interface{}{"input_tokens": inTokens, "output_tokens": outTokens},
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	blocks := make([]interface{}, 0, 2)
+	if thinkingA && result.Reasoning != "" {
+		blocks = append(blocks, map[string]interface{}{
+			"type": "thinking", "thinking": result.Reasoning, "signature": "",
 		})
 	}
+	blocks = append(blocks, map[string]interface{}{"type": "text", "text": finalText})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":            fmt.Sprintf("msg_%s", uuid.New().String()[:24]),
+		"type":          "message",
+		"role":          "assistant",
+		"model":         routeResult.Model,
+		"content":       blocks,
+		"stop_reason":   "end_turn",
+		"stop_sequence": nil,
+		"usage":         map[string]interface{}{"input_tokens": inTokens, "output_tokens": outTokens},
+	})
 }
 
 

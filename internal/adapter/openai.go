@@ -49,15 +49,18 @@ type OpenAIMessage struct {
 // OpenAIToolCall 是 OpenAI 格式的工具调用
 type OpenAIToolCall struct {
 	// Index 仅流式响应使用：客户端按它把分片的工具调用拼回完整调用
-	Index    *int               `json:"index,omitempty"`
-	ID       string             `json:"id"`
-	Type     string             `json:"type"`
+	Index *int `json:"index,omitempty"`
+	// ID/Type/Name 在参数分片里必须省略：按真实 OpenAI 的形状，
+	// 后续分片只带 index + function.arguments，重复 id/name 会让部分客户端
+	// 误判为「又来了一个新调用」而把同一个工具执行两次。
+	ID       string             `json:"id,omitempty"`
+	Type     string             `json:"type,omitempty"`
 	Function OpenAIToolCallFunc `json:"function"`
 }
 
 // OpenAIToolCallFunc 是工具调用函数
 type OpenAIToolCallFunc struct {
-	Name      string `json:"name"`
+	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments"`
 }
 
@@ -137,29 +140,71 @@ func MakeOpenAIStreamReasoningChunk(id, model, reasoning string) []byte {
 	}, nil)
 }
 
+// MakeOpenAIStreamRoleChunk 首帧：声明 assistant role。
+//
+// 真实 OpenAI 流的第一个 chunk 是 {"delta":{"role":"assistant"}}，
+// 客户端据此初始化 assistant 消息；缺了它，部分 SDK 会把后续 content
+// 当作「没有角色的片段」，在严格实现里直接报协议错误。
+func MakeOpenAIStreamRoleChunk(id, model string) []byte {
+	return marshalChunk(id, model, []OpenAIChoice{
+		{Index: 0, Delta: &OpenAIDelta{Role: "assistant"}},
+	}, nil)
+}
+
 // MakeOpenAIStreamFinishChunk 收尾块（finish_reason=stop）
 func MakeOpenAIStreamFinishChunk(id, model string) []byte {
-	fr := "stop"
+	return MakeOpenAIStreamFinishReasonChunk(id, model, "stop")
+}
+
+// MakeOpenAIStreamFinishReasonChunk 指定 finish_reason 的收尾块。
+func MakeOpenAIStreamFinishReasonChunk(id, model, reason string) []byte {
+	fr := reason
 	return marshalChunk(id, model, []OpenAIChoice{
 		{Index: 0, Delta: &OpenAIDelta{}, FinishReason: &fr},
 	}, nil)
 }
 
-// MakeOpenAIStreamToolCallChunk 工具调用块（finish_reason=tool_calls）。
-// 每个调用带 index：OpenAI 规范要求流式工具调用分片用 index 归组，
-// 缺了它客户端无法把分片拼回完整调用。
-// content 带上调用前的说明文字（与 tool_calls 并存是规范允许的）。
-func MakeOpenAIStreamToolCallChunk(id, model, content string, toolCalls []OpenAIToolCall) []byte {
-	indexed := make([]OpenAIToolCall, len(toolCalls))
-	for i, tc := range toolCalls {
+// MakeOpenAIStreamToolCallStartChunk 工具调用首片：只声明 id/type/name，arguments 为空。
+//
+// 真实 OpenAI 把工具调用拆成「先 name 再 arguments 增量」两阶段；
+// 一次性塞完整 arguments 虽然多数客户端也能吃，但按规范拆开对
+// 增量解析型客户端（Claude Code、部分 agent SDK）更稳。
+func MakeOpenAIStreamToolCallStartChunk(id, model string, calls []OpenAIToolCall) []byte {
+	out := make([]OpenAIToolCall, len(calls))
+	for i, tc := range calls {
 		idx := i
 		tc.Index = &idx
-		indexed[i] = tc
+		tc.Function.Arguments = ""
+		out[i] = tc
 	}
-	fr := "tool_calls"
 	return marshalChunk(id, model, []OpenAIChoice{
-		{Index: 0, Delta: &OpenAIDelta{Content: content, ToolCalls: indexed}, FinishReason: &fr},
+		{Index: 0, Delta: &OpenAIDelta{ToolCalls: out}},
 	}, nil)
+}
+
+// MakeOpenAIStreamToolCallArgsChunk 参数分片：只带 index 与 arguments 增量。
+func MakeOpenAIStreamToolCallArgsChunk(id, model string, index int, args string) []byte {
+	idx := index
+	return marshalChunk(id, model, []OpenAIChoice{
+		{Index: 0, Delta: &OpenAIDelta{ToolCalls: []OpenAIToolCall{
+			{Index: &idx, Function: OpenAIToolCallFunc{Arguments: args}},
+		}}},
+	}, nil)
+}
+
+// MakeOpenAIStreamErrorChunk 流中错误对象。
+//
+// OpenAI 没有官方的「流式错误 chunk」格式，但客户端生态普遍认
+// `data: {"error":{"message":…,"type":…}}`（参考实现 mimo2api 的 writeSSEError）。
+// 关键是它不能长成 chat.completion.chunk：否则会被当成正常内容吞掉。
+func MakeOpenAIStreamErrorChunk(msg string) []byte {
+	b, _ := json.Marshal(map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": msg,
+			"type":    "upstream_error",
+		},
+	})
+	return b
 }
 
 // MakeOpenAIStreamUsageChunk 独立的 usage 块。
