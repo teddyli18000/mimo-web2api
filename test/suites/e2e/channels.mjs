@@ -40,7 +40,7 @@ export default defineSuite({
         assert.equal(res.status, 200, res.text);
 
         const chatReq = upstream.chatRequests().at(-1);
-        assert.equal(chatReq.path, '/open-apis/bot/chat');
+        assert.equal(chatReq.path, '/open-apis/react/chat', '普通模型必须走 v3 的 react/chat');
         await upstream.waitFor(
           () => upstream.saveRequests().some(r => r.path === '/open-apis/chat/conversation/save'),
           { timeout: 5000, message: '普通模型的会话保存没有走 open-apis 通道' },

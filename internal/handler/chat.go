@@ -126,18 +126,29 @@ collect:
 			}
 			idle.Reset(sseIdleTimeout)
 			switch ev.Event {
+			case "dialogId":
+				// v3：这一轮响应的 dialogId，下一轮要作为 previousDialogueId 回传
+				var d struct {
+					Content string `json:"content"`
+				}
+				if err := json.Unmarshal([]byte(ev.Data), &d); err == nil && d.Content != "" {
+					lastMsgID = d.Content
+				}
 			case "message":
 				if ev.ID != "" {
 					lastMsgID = ev.ID
 				}
 				var msg struct {
-					Type    string `json:"type"`
-					Content string `json:"content"`
+					Type             string `json:"type"`
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoningContent"`
 				}
 				if err := json.Unmarshal([]byte(ev.Data), &msg); err != nil {
 					continue
 				}
-				if msg.Type == "text" && msg.Content != "" {
+				// v2 是 type=text；v3 不再带 type，正文在 content，思考在 reasoningContent。
+				// 思考内容不对外输出（网关本来就会过滤 <think>），这里只取正文。
+				if msg.Content != "" && (msg.Type == "" || msg.Type == "text") {
 					c := strings.ReplaceAll(msg.Content, "\u0000", "")
 					c, inThinking = filterThinkingChunk(c, inThinking)
 					if c != "" {
@@ -148,9 +159,22 @@ collect:
 				var e struct {
 					Type    string `json:"type"`
 					Content string `json:"content"`
+					Message string `json:"message"`
 				}
-				if err := json.Unmarshal([]byte(ev.Data), &e); err == nil && e.Content != "" {
-					upstreamErr = e.Content
+				if err := json.Unmarshal([]byte(ev.Data), &e); err == nil {
+					if e.Content != "" {
+						upstreamErr = e.Content
+					} else if e.Message != "" {
+						upstreamErr = e.Message
+					}
+				}
+			case "finish":
+				// v3 用 finish 事件 + data {"content":"[DONE]"} 收尾，不必等连接关闭
+				var f struct {
+					Content string `json:"content"`
+				}
+				if err := json.Unmarshal([]byte(ev.Data), &f); err == nil && f.Content == "[DONE]" {
+					break collect
 				}
 			case "usage":
 				var u usageData

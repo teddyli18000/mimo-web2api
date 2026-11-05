@@ -19,7 +19,7 @@ export default defineSuite({
 
       await t.test('第二轮复用会话，只发新增消息', async () => {
         upstream.reset();
-        upstream.onChat({ text: REPLY });
+        upstream.onChat({ text: REPLY, dialogId: 'dlg-fixed-1' });
         const first = await api.chat(chatRequest({ messages: [{ role: 'user', content: 'first question' }] }));
         assert.equal(first.status, 200, first.text);
 
@@ -35,6 +35,8 @@ export default defineSuite({
 
         const [r1, r2] = upstream.chatRequests();
         assert.equal(r2.body.conversationId, r1.body.conversationId, '第二轮应复用同一个 conversationId');
+        // v3 的上下文延续靠 previousDialogueId：上一轮响应里的 dialogId 必须原样回传
+        assert.equal(r2.body.previousDialogueId, 'dlg-fixed-1', '第二轮必须带上上一轮的 dialogId');
         assert.ok(r2.body.query.includes('second question'), r2.body.query);
         assert.ok(!r2.body.query.includes('first question'), `第二轮不应重发完整历史: ${r2.body.query}`);
       });

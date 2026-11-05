@@ -18,7 +18,8 @@ export default defineSuite({
       await assertUpstreamIsLocal(t, { api, upstream });
 
       await t.test('缺尾空行：最后一个事件被静默丢弃', async () => {
-        const raw = frame({ id: 'm1', event: 'message', data: { type: 'text', content: 'hello' } })
+        const raw = frame({ event: 'dialogId', data: { content: 'dlg-raw' } })
+          + frame({ event: 'message', data: { content: 'hello' } })
           + 'event: usage\ndata: {"promptTokens":12,"completionTokens":7,"totalTokens":19}';
         upstream.onChat({ raw });
 
@@ -33,7 +34,7 @@ export default defineSuite({
       });
 
       await t.test('CRLF 帧可以正常解析', async () => {
-        const raw = 'id: m2\r\nevent: message\r\ndata: {"type":"text","content":"crlf ok"}\r\n\r\n';
+        const raw = 'event: message\r\ndata: {"content":"crlf ok"}\r\n\r\n';
         upstream.onChat({ raw });
 
         const res = await api.chat(chatRequest());

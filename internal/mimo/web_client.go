@@ -21,7 +21,9 @@ import (
 
 const (
 	defaultWebBaseURL = "https://aistudio.xiaomimimo.com"
-	chatAPI           = "/open-apis/bot/chat"
+	// v3：/open-apis/bot/chat 已被上游废弃，任何请求都只回
+	// "平台升级啦，请「刷新页面」畅享更好的体验"。主对话走 react/chat。
+	chatAPI = "/open-apis/react/chat"
 	// ultraspeed 型号走独立的 fastchat 通道（2026-09 用户真实抓包证实；
 	// 在 open-apis 通道发送该型号会返回"模型名称错误"）
 	ultraChatAPI    = "/fastchat/open-apis/bot/chat"
@@ -142,15 +144,19 @@ func NewWebClient(serviceToken, userID, ph string) *WebClient {
 	}
 }
 
-// WebChatRequest 是网页端请求格式（字段与 2026-09 浏览器抓包一致：
-// 32 位 hex 的 msgId/conversationId，仅 query+isEditedQuery+modelConfig+multiMedias）
+// WebChatRequest 是网页端请求格式。
+// 2026-10 起上游升级到 react/chat（v3）：新增 previousDialogueId / sceneType / params，
+// 上一轮的 dialogId 要作为下一轮的 previousDialogueId 回传，否则服务端接不上上下文。
 type WebChatRequest struct {
-	MsgID          string       `json:"msgId"`
-	ConversationID string       `json:"conversationId"`
-	Query          string       `json:"query"`
-	IsEditedQuery  bool         `json:"isEditedQuery"`
-	ModelConfig    ModelConfig  `json:"modelConfig"`
-	MultiMedias    []interface{} `json:"multiMedias"`
+	MsgID              string                 `json:"msgId"`
+	ConversationID     string                 `json:"conversationId"`
+	Query              string                 `json:"query"`
+	IsEditedQuery      bool                   `json:"isEditedQuery"`
+	PreviousDialogueID *string                `json:"previousDialogueId"`
+	SceneType          interface{}            `json:"sceneType"`
+	Params             map[string]interface{} `json:"params"`
+	ModelConfig        ModelConfig            `json:"modelConfig"`
+	MultiMedias        []interface{}          `json:"multiMedias"`
 }
 
 // ModelConfig 模型配置
@@ -164,7 +170,7 @@ type ModelConfig struct {
 
 // Chat 发起聊天，返回 SSE 流
 // conversationID: 客户端提供的对话 ID（32 位 hex），用于复用 MiMo 服务端上下文
-// parentID: 保留参数（当前协议请求体不需要，仅用于将来兼容）
+// parentID: 上一轮响应里的 dialogId；v3 协议要原样回传为 previousDialogueId
 func (c *WebClient) Chat(ctx context.Context, query, model, conversationID, parentID string, thinking bool, medias []interface{}) (io.ReadCloser, error) {
 	if conversationID == "" {
 		conversationID = strings.ReplaceAll(uuid.New().String(), "-", "")
@@ -176,11 +182,19 @@ func (c *WebClient) Chat(ctx context.Context, query, model, conversationID, pare
 		medias = []interface{}{}
 	}
 
+	var previous *string
+	if parentID != "" {
+		previous = &parentID
+	}
+
 	reqBody := WebChatRequest{
-		MsgID:          strings.ReplaceAll(uuid.New().String(), "-", ""),
-		ConversationID: conversationID,
-		Query:          query,
-		IsEditedQuery:  false,
+		MsgID:              strings.ReplaceAll(uuid.New().String(), "-", ""),
+		ConversationID:     conversationID,
+		Query:              query,
+		IsEditedQuery:      false,
+		PreviousDialogueID: previous,
+		SceneType:          nil,
+		Params:             map[string]interface{}{},
 		ModelConfig: ModelConfig{
 			EnableThinking:  thinking,
 			WebSearchStatus: "disabled",

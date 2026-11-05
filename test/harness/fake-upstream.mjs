@@ -4,7 +4,11 @@
 import { createServer } from 'node:http';
 import { frame } from './sse.mjs';
 
-const CHAT_PATHS = new Set(['/open-apis/bot/chat', '/fastchat/open-apis/bot/chat']);
+const CHAT_PATHS = new Set([
+  '/open-apis/react/chat',        // v3，2026-10 起主通道
+  '/open-apis/bot/chat',          // v2，仅保留给旧测试回放
+  '/fastchat/open-apis/bot/chat', // ultraspeed 仍走 v2 fastchat
+]);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const json = (res, code, obj) => {
@@ -24,7 +28,7 @@ function route(req, res, url, record, state) {
     return json(res, 200, { code: 0 });
   }
   if (req.method === 'POST' && CHAT_PATHS.has(p)) {
-    return chat(req, res, state);
+    return chat(req, res, state, p);
   }
   if (req.method === 'POST' && p.endsWith('/open-apis/chat/conversation/save')) {
     return json(res, 200, { code: 0 });
@@ -55,7 +59,45 @@ function route(req, res, url, record, state) {
   json(res, 404, { code: 404, msg: `unexpected ${req.method} ${p}` });
 }
 
-async function chat(req, res, state) {
+// v3（react/chat）与 v2（fastchat ultraspeed）帧形状不同：
+// v3: dialogId / message{content,reasoningContent} / usage / finish([DONE])
+// v2: message{type:text,content} / usage
+function buildV3(script, state) {
+  let out = '';
+  const dialogId = script.dialogId || `dlg_${++state.seq}`;
+  out += frame({ event: 'dialogId', data: { content: dialogId } });
+  if (script.reasoning) {
+    out += frame({ event: 'message', data: { reasoningContent: script.reasoning } });
+  }
+  if (script.text !== undefined && script.text !== '') {
+    out += frame({ event: 'message', data: { content: script.text } });
+  }
+  if (script.error !== undefined) {
+    out += frame({ event: 'error', data: { content: script.error } });
+  }
+  if (script.usage !== false) {
+    out += frame({ event: 'usage', data: script.usage || { promptTokens: 12, completionTokens: 7, totalTokens: 19 } });
+  }
+  out += frame({ event: 'finish', data: { content: '[DONE]' } });
+  return out;
+}
+
+function buildV2(script, state) {
+  let out = '';
+  const id = script.id || `msg_${++state.seq}`;
+  if (script.text !== undefined && script.text !== '') {
+    out += frame({ id, event: 'message', data: { type: 'text', content: script.text } });
+  }
+  if (script.error !== undefined) {
+    out += frame({ event: 'error', data: { type: 'error', content: script.error } });
+  }
+  if (script.usage !== false) {
+    out += frame({ event: 'usage', data: script.usage || { promptTokens: 12, completionTokens: 7, totalTokens: 19 } });
+  }
+  return out;
+}
+
+async function chat(req, res, state, path) {
   let script;
   if (state.chatQueue.length) {
     script = state.chatQueue.shift();
@@ -80,22 +122,12 @@ async function chat(req, res, state) {
   if (script.raw !== undefined) return res.end(script.raw);
 
   let out = '';
-  const id = script.id || `msg_${++state.seq}`;
   if (script.events) {
     for (const ev of script.events) out += frame(ev);
+  } else if (path === '/open-apis/react/chat') {
+    out = buildV3(script, state);
   } else {
-    if (script.text !== undefined && script.text !== '') {
-      out += frame({ id, event: 'message', data: { type: 'text', content: script.text } });
-    }
-    if (script.error !== undefined) {
-      out += frame({ event: 'error', data: { type: 'error', content: script.error } });
-    }
-    if (script.usage !== false) {
-      out += frame({
-        event: 'usage',
-        data: script.usage || { promptTokens: 12, completionTokens: 7, totalTokens: 19 },
-      });
-    }
+    out = buildV2(script, state);
   }
   res.end(out);
 }

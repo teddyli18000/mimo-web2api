@@ -61,7 +61,7 @@ test/
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/open-apis/bot/chat`、`/fastchat/open-apis/bot/chat` | SSE：`message` / `usage` / `error`，每帧以空行结尾 |
+| POST | `/open-apis/react/chat`（v3）、`/fastchat/open-apis/bot/chat`（ultraspeed） | SSE：v3 为 `dialogId` / `message` / `usage` / `finish` / `error`，每帧以空行结尾 |
 | POST | `/open-apis/chat/conversation/save`、`/fastchat/...` | 异步保存，用例用 `waitFor` 等它到达 |
 | GET | `/open-apis/user/mi/get` | 健康检查 |
 | POST | `/open-apis/resource/genUploadInfo` | `uploadUrl` 指回假上游自身 |
