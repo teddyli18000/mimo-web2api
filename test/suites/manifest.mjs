@@ -8,6 +8,7 @@ export const suiteNames = [
   'e2e/credentials',
   'e2e/openai',
   'e2e/anthropic',
+  'e2e/responses',
   'e2e/session',
   'e2e/sse-edges',
   'e2e/images',

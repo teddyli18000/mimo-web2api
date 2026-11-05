@@ -160,7 +160,7 @@ git tag v1.3.3 && git push origin v1.3.3
 
 | 客户端 | Base URL | API Key | 说明 |
 |---|---|---|---|
-| Cherry Studio / ChatBox / LobeChat / NextChat | `http://localhost:8080/v1` | `sk-mimo` | OpenAI 兼容 |
+| Cherry Studio / ChatBox / LobeChat / NextChat | `http://localhost:8080/v1` | `sk-mimo` | OpenAI 兼容（`chat/completions` 或 `responses`） |
 | Claude Code / Anthropic SDK | `http://localhost:8080` | `sk-mimo` | Anthropic 格式，`/v1/messages` |
 | Cline / Roo Code | `http://localhost:8080/v1` | `sk-mimo` | OpenAI 兼容，支持 tools |
 | DSH（DeepSeek Harness） | `http://localhost:8080` | `sk-mimo` | `api: openai-completions`，**不带 `/v1`** |
@@ -219,7 +219,7 @@ curl http://localhost:8080/v1/messages \
 
 - 🔧 **工具调用** — OpenAI / Anthropic 双格式 tools，注入格式说明 + DSML/XML 解析，三模型实测可用
 - 🖼️ **图片输入** — 按上游资源接口上传并绑定对话，三模型均可识图；相同图片走缓存
-- 🔥 **双格式兼容** — `/v1/chat/completions` 与 `/v1/messages`（含流式）
+- 🔥 **多协议兼容** — `/v1/chat/completions`、`/v1/responses`、`/v1/messages`（均含流式）
 - 🔁 **会话复用（增量发送）** — 首轮发完整上下文，后续轮次只发新消息，依赖上游服务端上下文。与网页端行为一致：实测 12 轮 agent 会话平均 query 仅 240 字符（全量重放需 70K+），长任务不再撞长度限制
 - 🧠 **思考内容自动过滤** — thinking 段不会漏进正文
 - 👥 **多账号轮转** — 配多个账号自动分担负载

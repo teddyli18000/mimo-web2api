@@ -98,6 +98,10 @@ func main() {
 		r.Get("/models/{id}", handler.ModelsHandler)
 		r.Post("/messages", messagesHandler.Handle)
 		r.Post("/messages/count_tokens", handler.CountTokensHandler)
+
+		// OpenAI Responses API（新端点）；文本对话，图片与工具仍走 chat/completions
+		responsesHandler := handler.NewResponsesHandler(accountPool)
+		r.Post("/responses", responsesHandler.Handle)
 	})
 
 	// 无 /v1 前缀的别名：兼容把 Base URL 配成 http://localhost:8080
