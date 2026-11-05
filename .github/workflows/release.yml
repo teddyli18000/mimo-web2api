@@ -51,6 +51,9 @@ jobs:
       # static/ 未入库（.gitignore 排除），必须先在 CI 里构建前端，go:embed 才有内容
       - name: Build frontend
         working-directory: web
+        env:
+          # 面板页脚的版本号来自这里；v 前缀由 vite.config.ts 去掉
+          APP_VERSION: ${{ github.ref_name }}
         run: |
           npm ci
           npm run build

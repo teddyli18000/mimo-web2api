@@ -144,7 +144,7 @@ export function Sidebar({ current, onNavigate }: SidebarProps) {
 
         {/* Version */}
         <p className={`hidden lg:block text-xs text-center ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>
-          v1.1.0 · MiMo Web2API
+          {__APP_VERSION__ === 'dev' ? 'dev' : `v${__APP_VERSION__}`} · MiMo Web2API
         </p>
       </div>
     </aside>
