@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"sync"
 )
@@ -83,10 +84,19 @@ var (
 	cfg  *Config
 	mu   sync.RWMutex
 	path string
+	sec  *credentialCipher
 )
 
 func Load(p string) (*Config, error) {
 	path = p
+
+	// 密钥先就位：首次运行生成默认配置时也要能加密落盘
+	c, err := loadOrCreateCipher(p)
+	if err != nil {
+		return nil, fmt.Errorf("credential key: %w", err)
+	}
+	sec = c
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -101,6 +111,16 @@ func Load(p string) (*Config, error) {
 		cfg = &Config{}
 		if err := json.Unmarshal(data, cfg); err != nil {
 			return nil, err
+		}
+		// 旧版本写的是明文：解密到内存，并立刻用密文重写一次
+		upgraded, err := decryptAccounts(cfg, sec)
+		if err != nil {
+			return nil, err
+		}
+		if upgraded {
+			if err := Save(); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// 环境变量覆盖（让 .env.example 名副其实；首次运行同样生效）
@@ -121,13 +141,33 @@ func Get() Config {
 
 func Save() error {
 	mu.RLock()
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	// 拷贝一份再加密：内存里的 Config 必须保持明文，否则接口返回的也是密文
+	snapshot := *cfg
+	snapshot.Accounts = append([]Account(nil), cfg.Accounts...)
 	pathCopy := path
+	c := sec
 	mu.RUnlock()
+
+	if c != nil {
+		for i := range snapshot.Accounts {
+			var err error
+			if snapshot.Accounts[i].ServiceToken, err = c.encrypt(snapshot.Accounts[i].ServiceToken); err != nil {
+				return err
+			}
+			if snapshot.Accounts[i].UserID, err = c.encrypt(snapshot.Accounts[i].UserID); err != nil {
+				return err
+			}
+			if snapshot.Accounts[i].Ph, err = c.encrypt(snapshot.Accounts[i].Ph); err != nil {
+				return err
+			}
+		}
+	}
+
+	data, err := json.MarshalIndent(&snapshot, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(pathCopy, data, 0644)
+	return os.WriteFile(pathCopy, data, 0o600)
 }
 
 func Update(fn func(*Config)) {

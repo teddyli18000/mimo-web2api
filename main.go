@@ -97,10 +97,7 @@ func main() {
 		r.Get("/models", handler.ModelsHandler)
 		r.Get("/models/{id}", handler.ModelsHandler)
 		r.Post("/messages", messagesHandler.Handle)
-		r.Post("/messages/count_tokens", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"input_tokens":0}`))
-		})
+		r.Post("/messages/count_tokens", handler.CountTokensHandler)
 	})
 
 	// 无 /v1 前缀的别名：兼容把 Base URL 配成 http://localhost:8080

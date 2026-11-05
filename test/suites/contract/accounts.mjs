@@ -83,10 +83,20 @@ export default defineSuite({
         assert.ok(!(await list()).some(a => a.id === 'acc-2'));
       });
 
-      await t.test('落盘 config.json 与接口返回一致', async () => {
+      await t.test('落盘的是密文，接口返回明文', async () => {
         const fromApi = await list();
         const fromDisk = (await gw.readConfig()).accounts;
-        assert.deepEqual(fromDisk, fromApi);
+
+        assert.deepEqual(fromDisk.map(a => a.id), fromApi.map(a => a.id), '账号顺序与 ID 应一致');
+        for (const acc of fromDisk) {
+          for (const field of ['service_token', 'user_id', 'ph']) {
+            assert.ok(
+              String(acc[field]).startsWith('enc:v1:'),
+              `${field} 落盘后应是密文，实际是 ${String(acc[field]).slice(0, 12)}`,
+            );
+          }
+        }
+        assert.ok(fromApi.every(a => !String(a.service_token).startsWith('enc:v1:')), '接口应返回明文');
       });
     } finally {
       await gw.stop();

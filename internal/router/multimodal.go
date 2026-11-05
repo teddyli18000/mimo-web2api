@@ -33,6 +33,11 @@ type RouteResult struct {
 //
 // fallback 来自 config.json 的 default_model（管理面板可改）；传空串时退回常量。
 func RouteModel(requestedModel string, fallback string) RouteResult {
+	// Claude 客户端会带 claude-* 模型名：不认识就回落默认模型，而不是把
+	// "claude-opus-4-6" 当成 MiMo 型号发给上游（会被判模型名称错误）。
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(requestedModel)), "claude") {
+		requestedModel = ""
+	}
 	if requestedModel != "" && requestedModel != "auto" {
 		normalized := normalizeModel(requestedModel)
 		return RouteResult{Model: normalized, Reason: "explicit"}
