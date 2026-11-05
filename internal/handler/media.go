@@ -95,3 +95,89 @@ func uploadImages(ctx context.Context, client *mimo.WebClient, dataURLs []string
 	}
 	return out
 }
+
+// textFile 是待上传的文本附件
+type textFile struct {
+	Name string
+	Data []byte
+}
+
+// collectTextFilesOpenAI 取 OpenAI 的 file 内容块：
+// {type:"file", file:{filename, file_data:"data:text/plain;base64,..."}}
+func collectTextFilesOpenAI(msgs []adapter.OpenAIMessage) []textFile {
+	var out []textFile
+	for _, m := range msgs {
+		blocks, ok := m.Content.([]interface{})
+		if !ok {
+			continue
+		}
+		for _, b := range blocks {
+			bm, ok := b.(map[string]interface{})
+			if !ok || bm["type"] != "file" {
+				continue
+			}
+			f, ok := bm["file"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			name, _ := f["filename"].(string)
+			raw, _ := f["file_data"].(string)
+			if raw == "" {
+				raw, _ = f["data"].(string)
+			}
+			if data, _, ok := mimo.MediaFromDataURL(raw); ok {
+				out = append(out, textFile{Name: name, Data: data})
+			}
+		}
+	}
+	return out
+}
+
+// collectTextFilesAnthropic 取 Anthropic 的 document 块（text/plain 的 base64）。
+func collectTextFilesAnthropic(msgs []adapter.AnthropicMessage) []textFile {
+	var out []textFile
+	for _, m := range msgs {
+		blocks, ok := m.Content.([]interface{})
+		if !ok {
+			continue
+		}
+		for _, b := range blocks {
+			bm, ok := b.(map[string]interface{})
+			if !ok || bm["type"] != "document" {
+				continue
+			}
+			src, ok := bm["source"].(map[string]interface{})
+			if !ok || src["type"] != "base64" {
+				continue
+			}
+			data, _ := src["data"].(string)
+			mime, _ := src["media_type"].(string)
+			if data == "" || (mime != "" && mime != "text/plain") {
+				continue
+			}
+			if raw, _, ok := mimo.MediaFromDataURL("data:text/plain;base64," + data); ok {
+				name, _ := bm["title"].(string)
+				out = append(out, textFile{Name: name, Data: raw})
+			}
+		}
+	}
+	return out
+}
+
+// uploadFiles 把文本文件传到上游资源接口，返回 mediaType=file 的 multiMedias 条目。
+func uploadFiles(ctx context.Context, client *mimo.WebClient, files []textFile) []interface{} {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]interface{}, 0, len(files))
+	for _, f := range files {
+		obj, err := client.UploadFile(ctx, f.Data, f.Name)
+		if err != nil {
+			log.Printf("[media] 文本文件上传失败（%s, %d 字节）: %v", f.Name, len(f.Data), err)
+			continue
+		}
+		log.Printf("[media] 已上传文本文件 %s（%d 字节）→ 资源 id=%v", f.Name, len(f.Data), obj["url"])
+		out = append(out, obj)
+	}
+	return out
+}

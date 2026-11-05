@@ -303,8 +303,9 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 	stats.Get().IncrConcurrency()
 	defer stats.Get().DecrConcurrency()
 
-	// 图片先传到上游资源接口，拿到 id 后随对话一起发（否则模型看不到图）
+	// 图片与文本文件先传到上游资源接口，拿到 id 后随对话一起发（否则模型看不到）
 	medias := uploadImages(ctx, client, collectImagesOpenAI(req.Messages))
+	medias = append(medias, uploadFiles(ctx, client, collectTextFilesOpenAI(req.Messages))...)
 
 	curConvID := convID
 	curParentID := parentID
@@ -649,6 +650,7 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	defer stats.Get().DecrConcurrency()
 
 	mediasA := uploadImages(ctx, client, collectImagesAnthropic(req.Messages))
+	mediasA = append(mediasA, uploadFiles(ctx, client, collectTextFilesAnthropic(req.Messages))...)
 
 	curConvID := convID
 	curParentID := parentID

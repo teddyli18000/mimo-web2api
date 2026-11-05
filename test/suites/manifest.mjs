@@ -12,6 +12,7 @@ export const suiteNames = [
   'e2e/session',
   'e2e/sse-edges',
   'e2e/images',
+  'e2e/files',
   'e2e/tools',
   'e2e/channels',
   'e2e/resilience',

@@ -220,7 +220,18 @@ func apiKeyAuth(next http.Handler) http.Handler {
 			key = key[7:]
 		}
 		currentCfg := config.Get()
-		if key == "" || key != currentCfg.APIKey {
+		valid := false
+		for _, k := range currentCfg.APIKeys {
+			if k != "" && key == k {
+				valid = true
+				break
+			}
+		}
+		// 兼容只填了 api_key 的旧配置
+		if !valid && currentCfg.APIKey != "" && key == currentCfg.APIKey {
+			valid = true
+		}
+		if key == "" || !valid {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"error":{"message":"Invalid API key","type":"authentication_error"}}`))

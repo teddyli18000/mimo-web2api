@@ -78,16 +78,6 @@ func MediaFromDataURL(dataURL string) (data []byte, mime string, ok bool) {
 // UploadMedia 把一张图片上传到上游并返回 multiMedias 条目。
 // 相同内容命中缓存时直接复用（多轮对话里同一张图很常见）。
 func (c *WebClient) UploadMedia(ctx context.Context, data []byte, mime string) (map[string]interface{}, error) {
-	sum := md5.Sum(data)
-	key := hex.EncodeToString(sum[:])
-
-	mediaMu.Lock()
-	if e, ok := mediaCache[key]; ok && time.Since(e.createdAt) < mediaCacheTTL {
-		mediaMu.Unlock()
-		return e.obj, nil
-	}
-	mediaMu.Unlock()
-
 	ext := ".png"
 	switch mime {
 	case "image/jpeg", "image/jpg":
@@ -97,7 +87,30 @@ func (c *WebClient) UploadMedia(ctx context.Context, data []byte, mime string) (
 	case "image/gif":
 		ext = ".gif"
 	}
-	fileName := strings.ReplaceAll(uuid.New().String(), "-", "") + ext
+	return c.uploadResource(ctx, data, strings.ReplaceAll(uuid.New().String(), "-", "")+ext, "image")
+}
+
+// UploadFile 把文本文件上传到上游，返回 mediaType=file 的 multiMedias 条目。
+// 流程与图片相同，只是文件名用客户端给的、mediaType 标成 file。
+func (c *WebClient) UploadFile(ctx context.Context, data []byte, name string) (map[string]interface{}, error) {
+	if strings.TrimSpace(name) == "" {
+		name = "file.txt"
+	}
+	// 上游只按扩展名判断类型，避免奇怪字符进签名 URL
+	name = strings.ReplaceAll(name, " ", "_")
+	return c.uploadResource(ctx, data, name, "file")
+}
+
+func (c *WebClient) uploadResource(ctx context.Context, data []byte, fileName, mediaType string) (map[string]interface{}, error) {
+	sum := md5.Sum(data)
+	key := mediaType + ":" + hex.EncodeToString(sum[:])
+
+	mediaMu.Lock()
+	if e, ok := mediaCache[key]; ok && time.Since(e.createdAt) < mediaCacheTTL {
+		mediaMu.Unlock()
+		return e.obj, nil
+	}
+	mediaMu.Unlock()
 
 	// 1. 取签名上传地址
 	var info struct {
@@ -162,7 +175,7 @@ func (c *WebClient) UploadMedia(ctx context.Context, data []byte, mime string) (
 	}
 
 	obj := map[string]interface{}{
-		"mediaType":          "image",
+		"mediaType":          mediaType,
 		"fileUrl":            info.Data.ResourceURL,
 		"compressedVideoUrl": "",
 		"audioTrackUrl":      "",

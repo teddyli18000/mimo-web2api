@@ -9,7 +9,8 @@ import (
 
 type Config struct {
 	Port         string    `json:"port"`
-	APIKey       string    `json:"api_key"` // 网关自身的认证 Key
+	APIKey       string    `json:"api_key"`            // 网关自身的认证 Key（单 Key 兼容字段）
+	APIKeys      []string  `json:"api_keys,omitempty"` // 多 Key；为空时回退到 APIKey
 	DefaultModel string    `json:"default_model"`
 	Accounts     []Account `json:"accounts"`
 }
@@ -129,6 +130,14 @@ func Load(p string) (*Config, error) {
 	}
 	if v := os.Getenv("API_KEY"); v != "" {
 		cfg.APIKey = v
+		cfg.APIKeys = []string{v} // 环境变量优先，避免旧的 api_keys 里还留着可用的旧 Key
+	}
+	// 双向兜底：只配 api_key 的老配置能用，只配 api_keys 的新配置也能被面板读到
+	if len(cfg.APIKeys) == 0 && cfg.APIKey != "" {
+		cfg.APIKeys = []string{cfg.APIKey}
+	}
+	if cfg.APIKey == "" && len(cfg.APIKeys) > 0 {
+		cfg.APIKey = cfg.APIKeys[0]
 	}
 	return cfg, nil
 }
