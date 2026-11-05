@@ -45,6 +45,35 @@ export default defineSuite({
         assert.equal(text, 'streamed anthropic');
       });
 
+      await t.test('thinking 请求：非流式返回 thinking 块', async () => {
+        upstream.reset();
+        upstream.onChat({ text: 'thought answer', reasoning: 'deep thoughts' });
+        const res = await api.messages(messagesRequest({ thinking: { type: 'enabled', budget_tokens: 12000 } }));
+        assert.equal(res.status, 200, res.text);
+        assert.equal(res.json.content[0].type, 'thinking');
+        assert.equal(res.json.content[0].thinking, 'deep thoughts');
+        assert.equal(res.json.content[1].type, 'text');
+
+        const cfg = upstream.chatRequests().at(-1).body.modelConfig;
+        assert.equal(cfg.enableThinking, true, JSON.stringify(cfg));
+        assert.equal(cfg.reasoning_effort, 'high', JSON.stringify(cfg));
+      });
+
+      await t.test('thinking 请求：流式下发 thinking_delta 并把正文挪到索引 1', async () => {
+        upstream.reset();
+        upstream.onChat({ text: 'thought answer', reasoning: 'deep thoughts' });
+        const res = await api.messages(messagesRequest({ stream: true, thinking: { type: 'enabled', budget_tokens: 12000 } }));
+        assert.equal(res.status, 200, res.text);
+
+        const events = parseAnthropicStream(res.text);
+        const thinkingDelta = events.find(e => e.event === 'content_block_delta' && e.data?.delta?.type === 'thinking_delta');
+        assert.ok(thinkingDelta, events.map(e => e.event).join(','));
+        assert.equal(thinkingDelta.data.delta.thinking, 'deep thoughts');
+
+        const textDelta = events.find(e => e.event === 'content_block_delta' && e.data?.delta?.type === 'text_delta');
+        assert.equal(textDelta.data.index, 1, '有思考块时正文必须是索引 1');
+      });
+
       await t.test('system 数组真的进了上游 query', async () => {
         upstream.onChat({ text: 'ok' });
         const res = await api.messages(messagesRequest({ system: [{ type: 'text', text: 'be brief' }] }));

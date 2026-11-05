@@ -80,8 +80,8 @@ func randomHex32() string {
 	return hex.EncodeToString(b)
 }
 
-func collectWebResult(ctx context.Context, client *mimo.WebClient, query, model, convID, parentID string, medias []interface{}) (webResult, error) {
-	body, err := client.Chat(ctx, query, model, convID, parentID, false, medias)
+func collectWebResult(ctx context.Context, client *mimo.WebClient, query, model, convID, parentID string, medias []interface{}, thinking bool, reasoningEffort string) (webResult, error) {
+	body, err := client.Chat(ctx, query, model, convID, parentID, thinking, medias, reasoningEffort)
 	if err != nil {
 		return webResult{}, err
 	}
@@ -265,7 +265,11 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 	// 工具结果轮（本轮没有新提问）需要把任务锚点带回去
 	useAnchor := !isNew && turnQuestion == "" && taskAnchor != ""
 
+	var compressedFull string
 	buildQuery := func(full bool) string {
+		if full && compressedFull != "" {
+			return compressedFull
+		}
 		msgs := req.Messages
 		if !full {
 			msgs = DeltaMessages(req.Messages)
@@ -281,7 +285,12 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 		if !full && useAnchor {
 			extra = append(extra, "Current task (the user's request you are working on): "+taskAnchor)
 		}
-		return serializeMessages(msgs, budget, extra...)
+		q := serializeMessages(msgs, budget, extra...)
+		if full {
+			q = compressQuery(ctx, client, q, model, budget)
+			compressedFull = q
+		}
+		return q
 	}
 
 	query := buildQuery(isNew)
@@ -314,7 +323,7 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 
 	for attempt := 0; attempt < 2; attempt++ {
 		var err error
-		result, err = collectWebResult(ctx, client, query, model, curConvID, curParentID, medias)
+		result, err = collectWebResult(ctx, client, query, model, curConvID, curParentID, medias, req.ReasoningEffort != "", req.ReasoningEffort)
 		if err != nil {
 			log.Printf("[error] web chat (attempt %d): %v", attempt+1, err)
 			status, msg := upstreamErrorStatus(err.Error())
@@ -605,7 +614,11 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	taskAnchorA := h.convStore.Task(convID)
 	useAnchorA := !isNew && turnQuestionA == "" && taskAnchorA != ""
 
+	var compressedFullA string
 	buildQueryA := func(full bool) string {
+		if full && compressedFullA != "" {
+			return compressedFullA
+		}
 		msgs := req.Messages
 		if !full {
 			msgs = DeltaMessagesAnthropic(req.Messages)
@@ -622,7 +635,12 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		if !full && useAnchorA {
 			extra = append(extra, "Current task (the user's request you are working on): "+taskAnchorA)
 		}
-		return serializeMessagesAnthropic(msgs, systemText, budgetA, extra...)
+		q := serializeMessagesAnthropic(msgs, systemText, budgetA, extra...)
+		if full {
+			q = compressQuery(ctx, client, q, routeResult.Model, budgetA)
+			compressedFullA = q
+		}
+		return q
 	}
 	query := buildQueryA(isNew)
 	if query == "" {
@@ -646,6 +664,16 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	mediasA := uploadImages(ctx, client, collectImagesAnthropic(req.Messages))
 	mediasA = append(mediasA, uploadFiles(ctx, client, collectTextFilesAnthropic(req.Messages))...)
 
+	// Anthropic 用 thinking.budget_tokens 表达强度，映射成上游的档位
+	thinkingA := req.Thinking != nil && req.Thinking.Type != "disabled"
+	effortA := ""
+	if thinkingA {
+		effortA = "high"
+		if b := req.Thinking.BudgetTokens; b > 0 && b < 8000 {
+			effortA = "medium"
+		}
+	}
+
 	curConvID := convID
 	curParentID := parentID
 	replacedFrom := "" // 非空表示空响应重试换过会话，成功后需迁移映射
@@ -653,7 +681,7 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	for attempt := 0; attempt < 2; attempt++ {
 		var err error
-		result, err = collectWebResult(ctx, client, query, routeResult.Model, curConvID, curParentID, mediasA)
+		result, err = collectWebResult(ctx, client, query, routeResult.Model, curConvID, curParentID, mediasA, thinkingA, effortA)
 		if err != nil {
 			log.Printf("[error] Anthropic web chat (attempt %d): %v", attempt+1, err)
 			status, msg := upstreamErrorStatus(err.Error())
@@ -837,22 +865,43 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 		fmt.Fprintf(w, "event: message_start\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("message_start", startMsg))
-		// Send content_block_start for text block (index 0)
+
+		textIndex := 0
+		// 思考块固定在前：content_block_start(thinking) → thinking_delta → stop。
+		// signature 按官方格式给空串（上游没有签名，客户端也不会校验空值）。
+		if thinkingA && result.Reasoning != "" {
+			thinkStart := map[string]interface{}{
+				"type":  "content_block_start",
+				"index": 0,
+				"content_block": map[string]interface{}{
+					"type": "thinking", "thinking": "", "signature": "",
+				},
+			}
+			fmt.Fprintf(w, "event: content_block_start\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_start", thinkStart))
+			fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": 0,
+				"delta": map[string]interface{}{"type": "thinking_delta", "thinking": result.Reasoning},
+			}))
+			fmt.Fprintf(w, "event: content_block_stop\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": 0}))
+			textIndex = 1
+		}
+
 		textBlockStart := map[string]interface{}{
 			"type":          "content_block_start",
-			"index":         0,
+			"index":         textIndex,
 			"content_block": map[string]interface{}{"type": "text", "text": ""},
 		}
 		fmt.Fprintf(w, "event: content_block_start\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_start", textBlockStart))
 		if result.Text != "" {
 			fmt.Fprintf(w, "event: content_block_delta\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_delta", map[string]interface{}{
 				"type":  "content_block_delta",
-				"index": 0,
+				"index": textIndex,
 				"delta": map[string]interface{}{"type": "text_delta", "text": result.Text},
 			}))
 		}
 		// Close text content block
-		fmt.Fprintf(w, "event: content_block_stop\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": 0}))
+		fmt.Fprintf(w, "event: content_block_stop\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": textIndex}))
 		fmt.Fprintf(w, "event: message_delta\ndata: %s\n\n", adapter.MakeAnthropicStreamEvent("message_delta", map[string]interface{}{
 			"type": "message_delta",
 			"delta": map[string]interface{}{
@@ -866,9 +915,25 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	} else {
-		resp := adapter.MakeAnthropicResponseWithUsage(routeResult.Model, finalText, inTokens, outTokens)
+		blocks := make([]interface{}, 0, 2)
+		if thinkingA && result.Reasoning != "" {
+			blocks = append(blocks, map[string]interface{}{
+				"type": "thinking", "thinking": result.Reasoning, "signature": "",
+			})
+		}
+		blocks = append(blocks, map[string]interface{}{"type": "text", "text": finalText})
+
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(resp)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":            fmt.Sprintf("msg_%s", uuid.New().String()[:24]),
+			"type":          "message",
+			"role":          "assistant",
+			"model":         routeResult.Model,
+			"content":       blocks,
+			"stop_reason":   "end_turn",
+			"stop_sequence": nil,
+			"usage":         map[string]interface{}{"input_tokens": inTokens, "output_tokens": outTokens},
+		})
 	}
 }
 

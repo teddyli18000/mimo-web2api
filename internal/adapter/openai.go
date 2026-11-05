@@ -17,6 +17,8 @@ type OpenAIChatRequest struct {
 	MaxTokens   *int            `json:"max_tokens,omitempty"`
 	Tools       []OpenAITool    `json:"tools,omitempty"`
 	ToolChoice  interface{}     `json:"tool_choice,omitempty"`
+	// ReasoningEffort: low / medium / high，显式开启思考并透传给上游
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // OpenAITool 是 OpenAI 格式的工具定义

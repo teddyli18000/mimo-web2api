@@ -19,6 +19,13 @@ type AnthropicRequest struct {
 	Stream      bool            `json:"stream"`
 	Temperature *float64        `json:"temperature,omitempty"`
 	Tools       []AnthropicTool `json:"tools,omitempty"`
+	// Thinking 是官方扩展：type=enabled 时开思考，budget_tokens 决定强度
+	Thinking *AnthropicThinking `json:"thinking,omitempty"`
+}
+
+type AnthropicThinking struct {
+	Type         string `json:"type"` // "enabled" / "disabled" / "adaptive"
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 // AnthropicTool 是 Anthropic 格式的工具定义

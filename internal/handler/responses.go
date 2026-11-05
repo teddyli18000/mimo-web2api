@@ -62,7 +62,7 @@ func (h *ResponsesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	convID := randomHex32()
 	var result webResult
 	for attempt := 0; attempt < 2; attempt++ {
-		result, err = collectWebResult(ctx, client, query, route.Model, convID, "0", nil)
+		result, err = collectWebResult(ctx, client, query, route.Model, convID, "0", nil, false, "")
 		if err != nil {
 			status, msg := upstreamErrorStatus(err.Error())
 			writeError(w, status, "mimo error: "+msg)

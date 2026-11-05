@@ -70,6 +70,18 @@ export default defineSuite({
         assert.equal(reasoningChunk.choices[0].delta.reasoning_content, 'streamed thoughts');
       });
 
+      await t.test('reasoning_effort 开启思考并透传档位', async () => {
+        upstream.reset();
+        upstream.onChat({ text: 'effort answer', reasoning: 'effort thoughts' });
+        const res = await api.chat(chatRequest({ reasoning_effort: 'high' }));
+        assert.equal(res.status, 200, res.text);
+        assert.equal(res.json.choices[0].message.reasoning_content, 'effort thoughts');
+
+        const cfg = upstream.chatRequests().at(-1).body.modelConfig;
+        assert.equal(cfg.enableThinking, true, JSON.stringify(cfg));
+        assert.equal(cfg.reasoning_effort, 'high', JSON.stringify(cfg));
+      });
+
       await t.test('thinking 段不会漏进正文', async () => {
         upstream.onChat({ text: '<think>secret reasoning</think>visible' });
         const res = await api.chat(chatRequest());

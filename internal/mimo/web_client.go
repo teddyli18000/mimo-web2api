@@ -166,12 +166,14 @@ type ModelConfig struct {
 	Model           string  `json:"model"`
 	Temperature     float64 `json:"temperature"`
 	TopP            float64 `json:"topP"`
+	// ReasoningEffort 只在客户端显式要求思考时带上；上游按档位分配思考预算
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // Chat 发起聊天，返回 SSE 流
 // conversationID: 客户端提供的对话 ID（32 位 hex），用于复用 MiMo 服务端上下文
 // parentID: 上一轮响应里的 dialogId；v3 协议要原样回传为 previousDialogueId
-func (c *WebClient) Chat(ctx context.Context, query, model, conversationID, parentID string, thinking bool, medias []interface{}) (io.ReadCloser, error) {
+func (c *WebClient) Chat(ctx context.Context, query, model, conversationID, parentID string, thinking bool, medias []interface{}, reasoningEffort string) (io.ReadCloser, error) {
 	if conversationID == "" {
 		conversationID = strings.ReplaceAll(uuid.New().String(), "-", "")
 	}
@@ -185,6 +187,10 @@ func (c *WebClient) Chat(ctx context.Context, query, model, conversationID, pare
 	var previous *string
 	if parentID != "" {
 		previous = &parentID
+	}
+	// 开了思考但没给档位时默认 high（与网页端行为一致）
+	if thinking && reasoningEffort == "" {
+		reasoningEffort = "high"
 	}
 
 	reqBody := WebChatRequest{
@@ -201,6 +207,7 @@ func (c *WebClient) Chat(ctx context.Context, query, model, conversationID, pare
 			Model:           model,
 			Temperature:     0.8,
 			TopP:            0.95,
+			ReasoningEffort: reasoningEffort,
 		},
 		MultiMedias: medias,
 	}
