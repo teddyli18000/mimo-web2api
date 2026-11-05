@@ -9,7 +9,8 @@ export default defineSuite({
   tags: ['e2e'],
   async run(t) {
     const stack = await startStack();
-    const { api, upstream } = stack;
+    const { api, upstream, gw } = stack;
+    const diag = () => `\nupstream=${JSON.stringify(upstream.requests.map(r => r.method + ' ' + r.path))}\ngateway=${gw.logText().slice(-600)}`;
     try {
       await assertUpstreamIsLocal(t, { api, upstream });
 
@@ -17,7 +18,7 @@ export default defineSuite({
         const res = await api.get('/v1/models');
         assert.equal(res.status, 200, res.text);
         const ids = (res.json.data || []).map(m => m.id);
-        assert.ok(ids.includes('mimo-fake-chat'), JSON.stringify(ids));
+        assert.ok(ids.includes('mimo-fake-chat'), JSON.stringify(ids) + diag());
         const model = res.json.data.find(m => m.id === 'mimo-fake-chat');
         assert.equal(model.owned_by, 'xiaomi');
       });
@@ -25,8 +26,8 @@ export default defineSuite({
       await t.test('管理接口可以强制刷新', async () => {
         upstream.reset();
         const res = await api.post('/admin/api/models/refresh', {});
-        assert.equal(res.status, 200, res.text);
-        assert.equal(res.json.count, 1, JSON.stringify(res.json));
+        assert.equal(res.status, 200, res.text + diag());
+        assert.equal(res.json.count, 1, JSON.stringify(res.json) + diag());
         assert.equal(upstream.requests.filter(r => r.path === '/open-apis/bot/config').length, 1);
       });
     } finally {
