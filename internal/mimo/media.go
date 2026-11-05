@@ -104,6 +104,10 @@ func (c *WebClient) UploadFile(ctx context.Context, data []byte, name string) (m
 func (c *WebClient) uploadResource(ctx context.Context, data []byte, fileName, mediaType string) (map[string]interface{}, error) {
 	sum := md5.Sum(data)
 	key := mediaType + ":" + hex.EncodeToString(sum[:])
+	if mediaType == "file" {
+		// 同一个文件内容、不同文件名要各自上传：缓存命中会让第二个附件沿用旧名字
+		key += ":" + fileName
+	}
 
 	mediaMu.Lock()
 	if e, ok := mediaCache[key]; ok && time.Since(e.createdAt) < mediaCacheTTL {
