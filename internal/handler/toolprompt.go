@@ -80,11 +80,19 @@ func buildToolPrompt(tools []adapter.OpenAITool) string {
 			if !required[pname] {
 				continue
 			}
-			pDesc := oneLine(paramDescription(props[pname]), 100)
-			if pDesc == "" {
+			parts := make([]string, 0, 2)
+			// 对象/数组参数光有类型没用：模型不知道里面该放什么键，
+			// 于是对着 questions / files 这种参数编一个结构，客户端校验直接拒。
+			if shape := nestedShape(props[pname]); shape != "" {
+				parts = append(parts, shape)
+			}
+			if pDesc := oneLine(paramDescription(props[pname]), 100); pDesc != "" {
+				parts = append(parts, pDesc)
+			}
+			if len(parts) == 0 {
 				continue
 			}
-			sb.WriteString(fmt.Sprintf("    %s: %s\n", pname, pDesc))
+			sb.WriteString(fmt.Sprintf("    %s: %s\n", pname, strings.Join(parts, " — ")))
 		}
 	}
 	return sb.String()
@@ -94,15 +102,20 @@ func buildToolPrompt(tools []adapter.OpenAITool) string {
 // 客户端传进来的 Parameters 是 map[string]interface{}（JSON 反序列化结果）。
 func toolParams(tool adapter.OpenAITool) (map[string]interface{}, map[string]bool) {
 	props := map[string]interface{}{}
-	required := map[string]bool{}
 
 	params, ok := tool.Function.Parameters.(map[string]interface{})
 	if !ok {
-		return props, required
+		return props, map[string]bool{}
 	}
 	if p, ok := params["properties"].(map[string]interface{}); ok {
 		props = p
 	}
+	return props, requiredSet(params)
+}
+
+// requiredSet 读出 schema 里的 required 列表。
+func requiredSet(params map[string]interface{}) map[string]bool {
+	required := map[string]bool{}
 	switch r := params["required"].(type) {
 	case []interface{}:
 		for _, v := range r {
@@ -115,7 +128,7 @@ func toolParams(tool adapter.OpenAITool) (map[string]interface{}, map[string]boo
 			required[s] = true
 		}
 	}
-	return props, required
+	return required
 }
 
 func paramType(raw interface{}) string {
@@ -131,6 +144,61 @@ func paramType(raw interface{}) string {
 		return "any"
 	}
 	return "any"
+}
+
+// nestedShape 给对象/数组参数渲染一层内部结构，例如：
+//
+//	questions (array) → "array of {question*:string, options*:array, header:string}"
+//
+// 只展开一层：再深就会把提示词撑爆，而模型对第二层之后的准确率本来就很低。
+func nestedShape(raw interface{}) string {
+	pm, ok := raw.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	kind, _ := pm["type"].(string)
+	switch kind {
+	case "array":
+		items, ok := pm["items"].(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		if shape := objectShape(items); shape != "" {
+			return "array of " + shape
+		}
+	case "object":
+		return objectShape(pm)
+	}
+	return ""
+}
+
+func objectShape(m map[string]interface{}) string {
+	props, ok := m["properties"].(map[string]interface{})
+	if !ok || len(props) == 0 {
+		return ""
+	}
+	required := requiredSet(m)
+	names := make([]string, 0, len(props))
+	for pname := range props {
+		names = append(names, pname)
+	}
+	sort.Strings(names)
+	if len(names) > 6 {
+		names = names[:6]
+	}
+	parts := make([]string, 0, len(names)+1)
+	for _, pname := range names {
+		mark := ""
+		if required[pname] {
+			mark = "*"
+		}
+		parts = append(parts, pname+mark+":"+paramType(props[pname]))
+	}
+	shape := "{" + strings.Join(parts, ", ")
+	if len(props) > len(names) {
+		shape += ", …"
+	}
+	return shape + "}"
 }
 
 func paramDescription(raw interface{}) string {

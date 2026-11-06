@@ -199,8 +199,20 @@ func TestBuildToolPromptCarriesParamSpec(t *testing.T) {
 					"command":     map[string]interface{}{"type": "string", "description": "The PowerShell command to execute."},
 					"description": map[string]interface{}{"type": "string", "description": "Clear, concise description of what this command does."},
 					"timeout":     map[string]interface{}{"type": "number"},
+					"questions": map[string]interface{}{
+						"type":        "array",
+						"description": "Questions to ask the user.",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"question": map[string]interface{}{"type": "string"},
+								"options":  map[string]interface{}{"type": "array"},
+							},
+							"required": []interface{}{"question"},
+						},
+					},
 				},
-				"required": []interface{}{"command", "description"},
+				"required": []interface{}{"command", "description", "questions"},
 			},
 		},
 	}}
@@ -238,6 +250,11 @@ func TestBuildToolPromptCarriesParamSpec(t *testing.T) {
 	// 数值/布尔/数组的写法必须交代清楚，否则模型会给数字加引号
 	if !strings.Contains(got, "raw JSON") {
 		t.Error("缺少非字符串参数的写法说明")
+	}
+
+	// 对象数组参数必须给出一层内部结构：只写 "array" 时模型会自己编键名
+	if !strings.Contains(got, "array of {options:array, question*:string}") {
+		t.Errorf("数组参数的内部结构没渲染出来:\n%s", got)
 	}
 }
 
