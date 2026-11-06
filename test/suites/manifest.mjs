@@ -20,4 +20,5 @@ export const suiteNames = [
   'e2e/resilience',
   'e2e/streaming',
   'e2e/logging',
+  'e2e/client-compat',
 ];

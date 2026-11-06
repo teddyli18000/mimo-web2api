@@ -111,6 +111,8 @@ func main() {
 	chatHandler := handler.NewChatHandler(accountPool, convStore)
 	messagesHandler := handler.NewMessagesHandler(accountPool, convStore)
 	adminHandler := handler.NewAdminHandler(accountPool)
+	// OpenAI Responses API（新端点）；文本对话，图片与工具仍走 chat/completions
+	responsesHandler := handler.NewResponsesHandler(accountPool)
 
 	// OpenAI 兼容
 	r.Route("/v1", func(r chi.Router) {
@@ -120,16 +122,23 @@ func main() {
 		r.Get("/models/{id}", handler.ModelsHandler)
 		r.Post("/messages", messagesHandler.Handle)
 		r.Post("/messages/count_tokens", handler.CountTokensHandler)
-
-		// OpenAI Responses API（新端点）；文本对话，图片与工具仍走 chat/completions
-		responsesHandler := handler.NewResponsesHandler(accountPool)
 		r.Post("/responses", responsesHandler.Handle)
 	})
 
 	// 无 /v1 前缀的别名：兼容把 Base URL 配成 http://localhost:8080
-	// 而 client 自己拼 /chat/completions 的情况（如 DSH openai-completions 协议）
-	r.With(apiKeyAuth).Post("/chat/completions", chatHandler.Handle)
-	r.With(apiKeyAuth).Post("/completions", chatHandler.Handle)
+	// 而 client 自己拼 /chat/completions、/models 的情况
+	// （DSH 的 openai-completions 协议就是这么拼的）。
+	//
+	// 这组别名必须和 /v1 下的路由一一对应：漏一个，客户端拿到的就是 SPA 的
+	// index.html，报错却是 "did not answer with JSON"——排查成本极高。
+	api := r.With(apiKeyAuth)
+	api.Post("/chat/completions", chatHandler.Handle)
+	api.Post("/completions", chatHandler.Handle)
+	api.Get("/models", handler.ModelsHandler)
+	api.Get("/models/{id}", handler.ModelsHandler)
+	api.Post("/responses", responsesHandler.Handle)
+	api.Post("/messages", messagesHandler.Handle)
+	api.Post("/messages/count_tokens", handler.CountTokensHandler)
 
 	// Anthropic 快捷路径
 	r.With(apiKeyAuth).Post("/anthropic/v1/messages", messagesHandler.Handle)
@@ -156,6 +165,15 @@ func main() {
 		path := r.URL.Path
 		if path == "/" {
 			path = "/index.html"
+		}
+		// API 路径没匹配上路由时绝不能回落到 SPA：
+		// 客户端会收到 200 + index.html，然后报 "did not answer with JSON"，
+		// 把「少注册了一条路由」伪装成「服务端返回了脏数据」。
+		if strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/admin/") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"unknown endpoint","type":"invalid_request_error"}}`))
+			return
 		}
 		filePath := path[1:]
 		if data, err := fs.ReadFile(staticFS, filePath); err == nil {
