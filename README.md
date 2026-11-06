@@ -166,6 +166,8 @@ git tag v1.3.3 && git push origin v1.3.3
 | DSH（DeepSeek Harness） | `http://localhost:8080` | `sk-mimo` | `api: openai-completions`，**不带 `/v1`** |
 | SillyTavern | `http://localhost:8080/v1` | `sk-mimo` | 选 "OpenAI 兼容" |
 
+> Base URL 带不带 `/v1` 都行：每条接口都注册了两种形式（`/v1/models` 与 `/models`、`/v1/chat/completions` 与 `/chat/completions`、`/v1/responses` 与 `/responses`、`/v1/messages` 与 `/messages`）。客户端自己拼哪一条都能拿到 JSON，不会落到面板的 HTML 上。
+
 > DSH 配置示例（`~/.dsh/settings.yaml`）：
 > ```yaml
 > providers:

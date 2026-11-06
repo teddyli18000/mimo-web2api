@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/teddyli18000/mimo-web2api/internal/mimo"
 	"github.com/teddyli18000/mimo-web2api/internal/router"
 )
@@ -70,10 +72,28 @@ func modelListPayload() map[string]interface{} {
 	return map[string]interface{}{"object": "list", "data": data}
 }
 
-// ModelsHandler 是 /v1/models：优先上游实时列表，失败回退内置。
+// ModelsHandler 是 /v1/models 与 /v1/models/{id}：优先上游实时列表，失败回退内置。
+//
+// 带 {id} 时按 OpenAI 规范返回单个模型对象。旧实现无视路径参数、永远回列表，
+// 于是 GET /v1/models/xxx 拿到的是 {"object":"list","data":[…]}，
+// 按对象取 id 的客户端会直接拿到 undefined。
 func ModelsHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(modelListPayload())
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(modelListPayload())
+		return
+	}
+
+	data, _ := modelListPayload()["data"].([]map[string]interface{})
+	for _, m := range data {
+		if m["id"] == id {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(m)
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "model not found: "+id)
 }
 
 // RefreshModelsHandler 强制刷新缓存（管理接口，需 API Key）。

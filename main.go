@@ -114,6 +114,19 @@ func main() {
 	// OpenAI Responses API（新端点）；文本对话，图片与工具仍走 chat/completions
 	responsesHandler := handler.NewResponsesHandler(accountPool)
 
+	// 未匹配的 API 路径必须回 JSON：客户端拿到 200 + index.html 时
+	// 报的是 "did not answer with JSON"，比 404 难查一个数量级。
+	// （chi 的子路由有自己的 NotFound，根上的 /* 兜底收不到 /v1/... 的请求）
+	apiJSONError := func(status int, msg string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			fmt.Fprintf(w, `{"error":{"message":%q,"type":"invalid_request_error","code":%d}}`, msg, status)
+		}
+	}
+	// 非 GET 的未知路径也走 JSON：面板的深链是 GET，由下面的 /* 兜底
+	r.NotFound(apiJSONError(http.StatusNotFound, "not found"))
+
 	// OpenAI 兼容
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(apiKeyAuth)
@@ -123,6 +136,8 @@ func main() {
 		r.Post("/messages", messagesHandler.Handle)
 		r.Post("/messages/count_tokens", handler.CountTokensHandler)
 		r.Post("/responses", responsesHandler.Handle)
+		r.NotFound(apiJSONError(http.StatusNotFound, "unknown endpoint"))
+		r.MethodNotAllowed(apiJSONError(http.StatusMethodNotAllowed, "method not allowed"))
 	})
 
 	// 无 /v1 前缀的别名：兼容把 Base URL 配成 http://localhost:8080
