@@ -196,8 +196,8 @@ func TestBuildToolPromptCarriesParamSpec(t *testing.T) {
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"command":     map[string]interface{}{"type": "string"},
-					"description": map[string]interface{}{"type": "string"},
+					"command":     map[string]interface{}{"type": "string", "description": "The PowerShell command to execute."},
+					"description": map[string]interface{}{"type": "string", "description": "Clear, concise description of what this command does."},
 					"timeout":     map[string]interface{}{"type": "number"},
 				},
 				"required": []interface{}{"command", "description"},
@@ -206,22 +206,70 @@ func TestBuildToolPromptCarriesParamSpec(t *testing.T) {
 	}}
 	got := buildToolPrompt(tools)
 
-	// 必填参数必须标注，否则模型会漏传（2026-09 实测 missing required property）
+	// 必填参数必须标注（* 后缀），否则模型会漏传（2026-09 实测 missing required property）
 	for _, want := range []string{
-		"command: string (required)",
-		"description: string (required)",
-		"timeout: number",
+		"command*:string",
+		"description*:string",
+		"timeout:number",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("工具提示缺少 %q\n实际内容:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "timeout: number (required)") {
-		t.Error("可选参数被误标为 required")
+	if strings.Contains(got, "timeout*") {
+		t.Error("可选参数被误标为必填")
 	}
-	// 调用格式说明仍需保留
+	// 参数说明决定模型能不能填对值，必填项必须带
+	for _, want := range []string{
+		"The PowerShell command to execute.",
+		"Clear, concise description of what this command does.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("必填参数缺少说明 %q\n实际内容:\n%s", want, got)
+		}
+	}
+
+	// 调用格式契约必须在清单之前：超预算时截尾，契约得活下来
+	contract := strings.Index(got, "<tool_calls>")
+	list := strings.Index(got, "Available tools:")
+	if contract < 0 || list < 0 || contract > list {
+		t.Fatalf("格式契约必须排在工具清单之前（contract=%d list=%d）\n%s", contract, list, got)
+	}
+	// 数值/布尔/数组的写法必须交代清楚，否则模型会给数字加引号
+	if !strings.Contains(got, "raw JSON") {
+		t.Error("缺少非字符串参数的写法说明")
+	}
+}
+
+// 预算吃紧时，最先被牺牲的是历史与用户 system，工具契约必须完整保留。
+func TestSerializeKeepsToolContractUnderBudget(t *testing.T) {
+	tools := buildToolPrompt([]adapter.OpenAITool{{
+		Type: "function",
+		Function: adapter.OpenAIToolFunction{
+			Name:       "read",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"file_path": map[string]interface{}{"type": "string"}}, "required": []interface{}{"file_path"}},
+		},
+	}})
+
+	rts := []roleText{
+		{"system", strings.Repeat("SYSTEM-RULE ", 400)},
+		{"user", "看一下仓库"},
+		{"assistant", strings.Repeat("history ", 400)},
+		{"user", "现在列一下目录"},
+	}
+	got := serializeQuery(rts, 4000, tools)
+
 	if !strings.Contains(got, "<tool_calls>") || !strings.Contains(got, "<invoke name=") {
-		t.Error("工具调用格式说明丢失")
+		t.Fatalf("工具契约被截掉了:\n%s", got)
+	}
+	if !strings.Contains(got, "read(file_path*:string)") {
+		t.Fatalf("工具清单被整段丢掉:\n%s", got)
+	}
+	if !strings.Contains(got, "[Current Query]") || !strings.Contains(got, "现在列一下目录") {
+		t.Fatalf("提问必须保留:\n%s", got)
+	}
+	if n := len([]rune(got)); n > 4000 {
+		t.Fatalf("超出预算: %d", n)
 	}
 }
 

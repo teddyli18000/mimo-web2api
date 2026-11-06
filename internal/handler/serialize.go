@@ -307,6 +307,14 @@ func serializeMessagesAnthropic(msgs []adapter.AnthropicMessage, system string, 
 
 // serializeRoleTexts 三段式渲染 + 长度截断（extraSystem 并入 System 段并计入预算）
 func serializeRoleTexts(rts []roleText, maxChars int, extraSystem ...string) string {
+	return serializeQuery(rts, maxChars, "", extraSystem...)
+}
+
+// serializeQuery 与 serializeRoleTexts 相同，只是把「工具契约」单独成段。
+//
+// 工具段必须单独计价：它承载的是调用格式与参数名，被截掉一半等于整轮工具调用作废。
+// 预算不够时的牺牲顺序是：历史/上下文 → 用户 system → 工具清单（保住格式契约头）→ 提问。
+func serializeQuery(rts []roleText, maxChars int, tools string, extraSystem ...string) string {
 	var system []string
 	var rest []roleText
 	for _, m := range rts {
@@ -402,8 +410,9 @@ func serializeRoleTexts(rts []roleText, maxChars int, extraSystem ...string) str
 		return ""
 	}
 
-	// 组装：system → 历史 → 上下文 → 提问（提问放最后，模型对末尾注意力最强）
-	parts := make([]string, 0, 4)
+	// 组装：system → 历史 → 上下文 → 工具契约 → 提问
+	// 工具契约挨着提问：模型对末尾注意力最强，参数名离提问越近越不容易记错。
+	parts := make([]string, 0, 5)
 	if sysStr != "" {
 		parts = append(parts, sysStr)
 	}
@@ -413,24 +422,52 @@ func serializeRoleTexts(rts []roleText, maxChars int, extraSystem ...string) str
 	if ctxStr != "" {
 		parts = append(parts, ctxStr)
 	}
-	if queryStr != "" {
-		parts = append(parts, queryStr)
+	if tools != "" {
+		parts = append(parts, tools)
 	}
+	parts = append(parts, queryStr)
 	body := strings.Join(parts, "\n\n")
 
-	// 超限：丢历史与上下文，优先保 Current Query 与 system。
-	// system 自身超预算（工具 schema 过大）时必须截断它，否则 body 会突破上游
-	// 硬上限被直接拒绝——先保提问，再保 system，最后兜底硬截断。
+	if utf8.RuneCountInString(body) <= maxChars {
+		return strings.TrimSpace(body)
+	}
+
+	// 超限：先丢历史与上下文，再让用户 system 与工具清单按比例让步。
+	// 工具段的开头是调用格式契约，截断必须从尾部开始，保证契约永远留在 prompt 里。
+	const notice = "[Conversation History]\n...(truncated, history too long)"
+	const toolsCutNote = "\n...(tool list truncated: prompt budget exhausted)"
+
+	room := maxChars - utf8.RuneCountInString(queryStr) - utf8.RuneCountInString(notice) - 4
+	if room < 0 {
+		room = 0
+	}
+
+	sysPart := sysStr
+	toolsPart := tools
+	toolsNeed := utf8.RuneCountInString(toolsPart)
+	if utf8.RuneCountInString(sysPart)+toolsNeed > room {
+		// 工具最多占 55%：它承载格式契约，但也不能把 system 挤没。
+		toolsLimit := room * 55 / 100
+		if toolsNeed <= toolsLimit {
+			toolsLimit = toolsNeed // 工具用不完就把余量还给 system
+		}
+		sysPart = truncateHead(sysPart, room-toolsLimit)
+		if toolsNeed > toolsLimit {
+			toolsPart = truncateHead(toolsPart, toolsLimit) + toolsCutNote
+		}
+	}
+
+	parts = parts[:0]
+	if sysPart != "" {
+		parts = append(parts, sysPart)
+	}
+	if toolsPart != "" {
+		parts = append(parts, toolsPart)
+	}
+	parts = append(parts, notice, queryStr)
+	body = strings.Join(parts, "\n\n")
 	if utf8.RuneCountInString(body) > maxChars {
-		const notice = "\n\n[Conversation History]\n...(truncated, history too long)\n\n"
-		room := maxChars - utf8.RuneCountInString(queryStr) - utf8.RuneCountInString(notice)
-		if room < 0 {
-			room = 0
-		}
-		body = truncateHead(sysStr, room) + notice + queryStr
-		if utf8.RuneCountInString(body) > maxChars {
-			body = truncateTail(body, maxChars)
-		}
+		body = truncateTail(body, maxChars)
 	}
 
 	return strings.TrimSpace(body)

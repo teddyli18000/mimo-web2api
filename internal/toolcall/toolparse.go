@@ -528,10 +528,13 @@ func HasToolCallSyntax(text string) bool {
 		return false
 	}
 	lower := strings.ToLower(text)
+	// "<invoke" 必须单列：模型经常省略外层 <tool_calls> 包装直接吐
+	// <invoke name="…">，只认 tool_calls 会让整轮调用退化成普通正文。
 	return strings.Contains(lower, "tool_calls") ||
 		strings.Contains(lower, "dsml") ||
 		strings.Contains(lower, "function=") ||
 		strings.Contains(lower, "tool_call") ||
+		strings.Contains(lower, "<invoke") ||
 		percentToolRe.MatchString(text)
 }
 
@@ -544,6 +547,8 @@ func StripToolCallSyntax(text string) string {
 	result = regexp.MustCompile(`(?is)<function=[^>]*>[\s\S]*?</function>`).ReplaceAllString(result, "")
 	// Strip <tool_call>...</tool_call> blocks
 	result = regexp.MustCompile(`(?is)<tool_call>[\s\S]*?</tool_call>`).ReplaceAllString(result, "")
+	// Strip bare <invoke>...</invoke> blocks (模型省略了外层 <tool_calls>)
+	result = regexp.MustCompile(`(?is)<invoke\b[^>]*>[\s\S]*?</invoke>`).ReplaceAllString(result, "")
 	// Strip MiMo Code native % ToolName args lines
 	result = percentToolRe.ReplaceAllString(result, "")
 	return strings.TrimSpace(result)

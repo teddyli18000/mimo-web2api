@@ -150,7 +150,9 @@ func utf8SafeCut(b []byte, cut int) int {
 }
 
 // markerKind 返回命中的标记特征（仅用于日志，不含正文）。
-var toolMarkers = []string{"tool_calls", "dsml", "function=", "tool_call"}
+// 标记特征。`<invoke` 单列：模型经常直接吐 <invoke> 而不写外层
+// <tool_calls> 包装，把这种形态算进标记才能在流式时扣住它。
+var toolMarkers = []string{"tool_calls", "dsml", "function=", "tool_call", "<invoke"}
 
 func markerKind(buf []byte) string {
 	lower := strings.ToLower(string(buf))

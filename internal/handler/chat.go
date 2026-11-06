@@ -173,20 +173,15 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 			rts = toRoleTexts(DeltaMessages(req.Messages))
 		}
 		var extra []string
-		if len(req.Tools) > 0 {
-			if full {
-				extra = append(extra, buildToolPrompt(req.Tools))
-			} else if r := buildToolReminder(req.Tools); r != "" {
-				extra = append(extra, r)
-			}
-		}
 		if !full && useAnchor {
 			extra = append(extra, "Current task (the user's request you are working on): "+taskAnchor)
 		}
 		if full {
 			rts = compressRoleTexts(ctx, client, rts, model, budget)
 		}
-		q := serializeRoleTexts(rts, budget, extra...)
+		// 工具契约每轮都发：增量模式依赖上游服务端上下文，一旦那里没留住 schema，
+		// 模型就只能照自己的习惯猜工具名/参数名，客户端一个都不认。
+		q := serializeQuery(rts, budget, buildToolPrompt(req.Tools), extra...)
 		if full {
 			compressedFull = q
 		}
@@ -604,6 +599,7 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// query 组装：新会话完整上下文 + 完整工具 schema；延续会话仅增量 + 紧凑工具名提醒。
 	// 与 OpenAI 路径一致，工具结果轮要带上任务锚点。
 	hasTools := len(req.Tools) > 0
+	toolPromptA := buildToolPrompt(adapter.ConvertAnthropicToolsToOpenAI(req.Tools))
 	budgetA := router.MaxQueryCharsForModel(routeResult.Model)
 	turnQuestionA := currentTurnQuestionAnthropic(req.Messages)
 	// 只是应声（"继续"/"好的"）时不覆盖锚点，否则后续工具轮会注入无意义的任务
@@ -622,21 +618,14 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			rts = toRoleTextsAnthropic(DeltaMessagesAnthropic(req.Messages), systemText)
 		}
 		var extra []string
-		if hasTools {
-			openaiTools := adapter.ConvertAnthropicToolsToOpenAI(req.Tools)
-			if full {
-				extra = append(extra, buildToolPrompt(openaiTools))
-			} else if r := buildToolReminder(openaiTools); r != "" {
-				extra = append(extra, r)
-			}
-		}
 		if !full && useAnchorA {
 			extra = append(extra, "Current task (the user's request you are working on): "+taskAnchorA)
 		}
 		if full {
 			rts = compressRoleTexts(ctx, client, rts, routeResult.Model, budgetA)
 		}
-		q := serializeRoleTexts(rts, budgetA, extra...)
+		// 同 OpenAI 路径：工具契约每轮都发，且不参与历史截断。
+		q := serializeQuery(rts, budgetA, toolPromptA, extra...)
 		if full {
 			compressedFullA = q
 		}
