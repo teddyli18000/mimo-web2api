@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/teddyli18000/mimo-web2api/internal/adapter"
+	"github.com/teddyli18000/mimo-web2api/internal/toolcall"
 )
 
 func msg(role, text string) adapter.OpenAIMessage {
@@ -255,6 +256,26 @@ func TestBuildToolPromptCarriesParamSpec(t *testing.T) {
 	// 对象数组参数必须给出一层内部结构：只写 "array" 时模型会自己编键名
 	if !strings.Contains(got, "array of {options:array, question*:string}") {
 		t.Errorf("数组参数的内部结构没渲染出来:\n%s", got)
+	}
+}
+
+// 大小写不一致是无损纠正；未声明的名字原样保留，让客户端报"未知工具"给模型自我纠正。
+func TestNormalizeToolNames(t *testing.T) {
+	tools := []adapter.OpenAITool{{Function: adapter.OpenAIToolFunction{Name: "WebFetch"}}}
+	calls := []toolcall.ParsedToolCall{
+		{Name: "webfetch", Input: map[string]any{"url": "x"}},
+		{Name: "read_file", Input: map[string]any{}},
+	}
+	got := normalizeToolNames(calls, tools)
+
+	if got[0].Name != "WebFetch" {
+		t.Fatalf("大小写没对齐: %q", got[0].Name)
+	}
+	if got[0].Input["url"] != "x" {
+		t.Fatal("纠正名字时丢了参数")
+	}
+	if got[1].Name != "read_file" {
+		t.Fatalf("未声明的工具不应被改写: %q", got[1].Name)
 	}
 }
 

@@ -374,7 +374,7 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 	finalText := strings.TrimSpace(result.Text)
 	var toolCalls []adapter.OpenAIToolCall
 	if toolcall.HasToolCallSyntax(finalText) {
-		calls := toolcall.ParseToolCallsFromText(finalText)
+		calls := normalizeToolNames(toolcall.ParseToolCallsFromText(finalText), req.Tools)
 		log.Printf("[tools] parsed %d calls from text", len(calls))
 		for i, c := range calls {
 			log.Printf("[tools] call[%d]: name=%s input=%v", i, c.Name, c.Input)
@@ -599,7 +599,8 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	// query 组装：新会话完整上下文 + 完整工具 schema；延续会话仅增量 + 紧凑工具名提醒。
 	// 与 OpenAI 路径一致，工具结果轮要带上任务锚点。
 	hasTools := len(req.Tools) > 0
-	toolPromptA := buildToolPrompt(adapter.ConvertAnthropicToolsToOpenAI(req.Tools))
+	openaiToolsA := adapter.ConvertAnthropicToolsToOpenAI(req.Tools)
+	toolPromptA := buildToolPrompt(openaiToolsA)
 	budgetA := router.MaxQueryCharsForModel(routeResult.Model)
 	turnQuestionA := currentTurnQuestionAnthropic(req.Messages)
 	// 只是应声（"继续"/"好的"）时不覆盖锚点，否则后续工具轮会注入无意义的任务
@@ -911,7 +912,7 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	finalText := strings.TrimSpace(result.Text)
 	var calls []toolcall.ParsedToolCall
 	if hasTools && toolcall.HasToolCallSyntax(finalText) {
-		calls = toolcall.ParseToolCallsFromText(finalText)
+		calls = normalizeToolNames(toolcall.ParseToolCallsFromText(finalText), openaiToolsA)
 		log.Printf("[tools] Anthropic: parsed %d calls (raw len=%d): %q",
 			len(calls), len(finalText), finalText[:min(len(finalText), 400)])
 	}

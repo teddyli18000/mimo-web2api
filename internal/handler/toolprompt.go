@@ -2,10 +2,12 @@ package handler
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 
 	"github.com/teddyli18000/mimo-web2api/internal/adapter"
+	"github.com/teddyli18000/mimo-web2api/internal/toolcall"
 )
 
 // toolFormatContract 工具调用的输出契约。
@@ -210,6 +212,39 @@ func paramDescription(raw interface{}) string {
 		return d
 	}
 	return ""
+}
+
+// normalizeToolNames 把模型写的工具名对齐到请求里声明的名字。
+//
+// 只做「大小写不同」这种无损纠正：客户端按名字查表，大小写不匹配一样查不到。
+// 真的查不到就原样返回并记一条日志——直接丢掉这次调用会让模型永远等不到结果，
+// 交给客户端报「未知工具」反而是能自我纠正的路径。
+func normalizeToolNames(calls []toolcall.ParsedToolCall, tools []adapter.OpenAITool) []toolcall.ParsedToolCall {
+	if len(calls) == 0 || len(tools) == 0 {
+		return calls
+	}
+	known := make(map[string]bool, len(tools))
+	byLower := make(map[string]string, len(tools))
+	for _, t := range tools {
+		name := t.Function.Name
+		if name == "" {
+			continue
+		}
+		known[name] = true
+		byLower[strings.ToLower(name)] = name
+	}
+	for i := range calls {
+		if known[calls[i].Name] {
+			continue
+		}
+		if canon, ok := byLower[strings.ToLower(calls[i].Name)]; ok {
+			log.Printf("[tools] 工具名大小写不一致：模型写了 %q，声明的是 %q", calls[i].Name, canon)
+			calls[i].Name = canon
+			continue
+		}
+		log.Printf("[tools] 模型调用了未声明的工具 %q（已声明 %d 个）", calls[i].Name, len(known))
+	}
+	return calls
 }
 
 // oneLine 压成单行并截断：工具描述常含多行 Markdown，换行会让 "- " 条目
