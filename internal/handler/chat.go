@@ -164,6 +164,7 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 	useAnchor := !isNew && turnQuestion == "" && taskAnchor != ""
 
 	var compressedFull string
+	var toolCorrection string // 缺必填参数时的纠正提示，随 query 一起计入预算
 	buildQuery := func(full bool) string {
 		if full && compressedFull != "" {
 			return compressedFull
@@ -175,6 +176,9 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 		var extra []string
 		if !full && useAnchor {
 			extra = append(extra, "Current task (the user's request you are working on): "+taskAnchor)
+		}
+		if toolCorrection != "" {
+			extra = append(extra, toolCorrection)
 		}
 		if full {
 			rts = compressRoleTexts(ctx, client, rts, model, budget)
@@ -220,8 +224,9 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 	// 一旦写过任何字节（含 keepalive / role 帧），就只能按协议发错误帧了。
 	streamID := adapter.NewStreamID()
 	var (
-		sw    *sseWriter
-		guard *toolcall.MarkerGuard
+		sw              *sseWriter
+		guard           *toolcall.MarkerGuard
+		contentCommitted bool // 只记正文；reasoning 不算，否则思考块会挡住纠正重试
 	)
 	if stream {
 		sw = newSSEWriter(w)
@@ -247,7 +252,11 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 		if safe == "" {
 			return nil
 		}
-		return sw.Event(adapter.MakeOpenAIStreamContentChunk(streamID, model, safe))
+		if err := sw.Event(adapter.MakeOpenAIStreamContentChunk(streamID, model, safe)); err != nil {
+			return err
+		}
+		contentCommitted = true
+		return nil
 	}
 
 	args := chatArgs{
@@ -256,14 +265,19 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 		effort:   req.ReasoningEffort,
 	}
 
+	// 纠正重试时静默收集：第一轮可能已经吐过 reasoning，第二轮不能再吐一遍；
+	// 工具调用本身在流尾统一由 MarkerGuard 结算，不依赖逐段下发。
+	silentCorrection := false
+	// 最终确实走过静默重试：流尾要把第二轮的正文补发出去，否则模型改成
+	// 纯文字回答时客户端会收到一个空流。
+	correctionSilent := false
 	for attempt := 0; attempt < 2; attempt++ {
 		args.query = query
 		args.model = model
 		args.convID = curConvID
 		args.parentID = curParentID
 
-		var err error
-		result, err = runWebStream(ctx, client, args, streamHandlers{
+		handlers := streamHandlers{
 			OnStart: func() {
 				if sw != nil {
 					go sw.Keepalive(ctx, sseKeepaliveInterval)
@@ -271,7 +285,14 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 			},
 			OnReasoning: onReasoning,
 			OnContent:   onContent,
-		})
+		}
+		correctionSilent = silentCorrection
+		if silentCorrection {
+			handlers = streamHandlers{}
+		}
+
+		var err error
+		result, err = runWebStream(ctx, client, args, handlers)
 		if err != nil {
 			reportAccount(h.pool, client, err)
 			log.Printf("[error] web chat (attempt %d): %v", attempt+1, err)
@@ -323,6 +344,27 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 			abortStream(sw)
 			writeError(w, http.StatusBadGateway, "mimo returned an empty response (after retry)")
 			return
+		}
+
+		// 工具调用漏必填参数：模型偶尔只吐 `<invoke name="glob"></invoke>` 就收尾，
+		// 转成 tool_calls 后 arguments 是 "{}"，客户端校验必填项直接判失败
+		// （DSH 报 missing required property "pattern"）。
+		// 只要还没向客户端写过正文，就带着纠正提示换全新会话重问一次；
+		// 已经吐过字则不重试，避免客户端看到重复内容。
+		if len(req.Tools) > 0 && attempt == 0 && (sw == nil || !contentCommitted) {
+			calls := normalizeToolNames(toolcall.ParseToolCallsFromText(strings.TrimSpace(result.Text)), req.Tools)
+			if missing := toolcall.MissingRequired(calls, req.Tools); len(missing) > 0 {
+				log.Printf("[retry] incomplete tool call, missing %v, re-asking with correction", missing)
+				guard = nil // 复位守卫，避免上一轮扣押的标记串进新的一次流
+				silentCorrection = true
+				toolCorrection = toolcall.CorrectionNote(missing)
+				compressedFull = "" // 强制重算，把纠正提示带进 query
+				replacedFrom = curConvID
+				curConvID = randomHex32()
+				curParentID = "0"
+				query = buildQuery(true)
+				continue
+			}
 		}
 
 		break
@@ -419,6 +461,12 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 					if err := sw.Event(adapter.MakeOpenAIStreamContentChunk(streamID, model, rest)); err != nil {
 						return
 					}
+				}
+			} else if correctionSilent {
+				// 纠正重试那一轮是静默收集的，没有任何增量下发过；
+				// 模型若改成纯文字回答，必须在这里把整段正文补出去。
+				if err := sw.Event(adapter.MakeOpenAIStreamContentChunk(streamID, model, finalText)); err != nil {
+					return
 				}
 			}
 			if err := sw.Event(adapter.MakeOpenAIStreamFinishChunk(streamID, model)); err != nil {

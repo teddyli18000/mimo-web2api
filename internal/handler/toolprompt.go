@@ -26,7 +26,17 @@ Call format (emit this block verbatim in your reply):
 </invoke>
 </tool_calls>
 
+Example of a complete call (two parameters, one line each):
+
+<tool_calls>
+<invoke name="read">
+<parameter name="file_path">README.md</parameter>
+<parameter name="offset">1</parameter>
+</invoke>
+</tool_calls>
+
 Rules:
+- Every parameter marked * below is REQUIRED. Emit one <parameter> line for each of them, even when the value seems obvious. An <invoke> with no <parameter> children is INVALID and will be rejected.
 - Use the exact tool name and parameter names from the list below; a call with an unknown name or a missing required parameter (marked *) is rejected.
 - Strings are written as-is. Numbers, booleans, arrays and objects must be raw JSON: 42, true, ["a","b"], {"k":1} — do not quote numbers or booleans.
 - Several <invoke> blocks inside one <tool_calls> block call several tools at once.

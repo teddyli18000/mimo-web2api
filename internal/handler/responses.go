@@ -88,7 +88,14 @@ func (h *ResponsesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		queryRts = deltaRoleTexts(rts)
 	}
 	query := serializeQuery(queryRts, budget, toolPrompt)
-	fullQuery := serializeQuery(rts, budget, toolPrompt) // 空响应重试时重发完整上下文
+	// 重问时重发完整上下文；纠正提示走 extraSystem，和工具契约一起计入预算，
+	// 不能简单往序列化结果后面拼字符串（超预算时会把 query 顶过上游硬上限）。
+	fullQuery := func(correction string) string {
+		if correction == "" {
+			return serializeQuery(rts, budget, toolPrompt)
+		}
+		return serializeQuery(rts, budget, toolPrompt, correction)
+	}
 	if query == "" {
 		writeError(w, http.StatusBadRequest, "no valid user message")
 		return
@@ -140,11 +147,24 @@ func (h *ResponsesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				replacedFrom = args.convID
 				args.convID = randomHex32()
 				args.parentID = "0"
-				args.query = fullQuery
+				args.query = fullQuery("")
 				continue
 			}
 			writeError(w, http.StatusBadGateway, "mimo returned an empty response (after retry)")
 			return
+		}
+
+		// 同 chat 路径：工具调用漏必填参数时带纠正提示重问一次
+		if len(openaiTools) > 0 && attempt == 0 {
+			calls := normalizeToolNames(toolcall.ParseToolCallsFromText(strings.TrimSpace(result.Text)), openaiTools)
+			if missing := toolcall.MissingRequired(calls, openaiTools); len(missing) > 0 {
+				log.Printf("[retry] responses: incomplete tool call, missing %v", missing)
+				replacedFrom = args.convID
+				args.convID = randomHex32()
+				args.parentID = "0"
+				args.query = fullQuery(toolcall.CorrectionNote(missing))
+				continue
+			}
 		}
 		break
 	}
@@ -163,7 +183,7 @@ func (h *ResponsesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 // handleStream 边收边发：文本走 output_text.delta，工具调用在流尾补成
 // function_call 项。response.completed 必须与 response.created 共用同一个 id。
-func (h *ResponsesHandler) handleStream(ctx context.Context, w http.ResponseWriter, client *mimo.WebClient, model string, args chatArgs, fullQuery string, tools []adapter.OpenAITool) {
+func (h *ResponsesHandler) handleStream(ctx context.Context, w http.ResponseWriter, client *mimo.WebClient, model string, args chatArgs, fullQuery func(string) string, tools []adapter.OpenAITool) {
 	sw := newSSEWriter(w)
 	defer sw.Stop()
 
@@ -225,8 +245,11 @@ func (h *ResponsesHandler) handleStream(ctx context.Context, w http.ResponseWrit
 	var result webResult
 	var runErr error
 	replacedFrom := ""
+	// 纠正重试时第一轮可能已经吐过 reasoning，第二轮不能重复下发事件。
+	silentCorrection := false
+	correctionSilent := false
 	for attempt := 0; attempt < 2; attempt++ {
-		result, runErr = runWebStream(ctx, client, args, streamHandlers{
+		handlers := streamHandlers{
 			OnStart: func() { go sw.Keepalive(ctx, sseKeepaliveInterval) },
 			OnReasoning: func(delta string) error {
 				return emit("response.reasoning_summary_text.delta", map[string]interface{}{"delta": delta})
@@ -238,7 +261,12 @@ func (h *ResponsesHandler) handleStream(ctx context.Context, w http.ResponseWrit
 				safe, _ := guard.Write(delta)
 				return writeText(safe)
 			},
-		})
+		}
+		correctionSilent = silentCorrection
+		if silentCorrection {
+			handlers = streamHandlers{}
+		}
+		result, runErr = runWebStream(ctx, client, args, handlers)
 		if runErr != nil {
 			break
 		}
@@ -249,8 +277,22 @@ func (h *ResponsesHandler) handleStream(ctx context.Context, w http.ResponseWrit
 			replacedFrom = args.convID
 			args.convID = randomHex32()
 			args.parentID = "0"
-			args.query = fullQuery // 新会话必须重发完整上下文
+			args.query = fullQuery("") // 新会话必须重发完整上下文
 			continue
+		}
+		// 工具调用漏必填参数：还没写过消息正文时带纠正提示重问一次
+		if len(tools) > 0 && attempt == 0 && !messageOpen {
+			calls := normalizeToolNames(toolcall.ParseToolCallsFromText(strings.TrimSpace(result.Text)), tools)
+			if missing := toolcall.MissingRequired(calls, tools); len(missing) > 0 {
+				log.Printf("[retry] responses stream: incomplete tool call, missing %v", missing)
+				guard = nil
+				silentCorrection = true
+				replacedFrom = args.convID
+				args.convID = randomHex32()
+				args.parentID = "0"
+				args.query = fullQuery(toolcall.CorrectionNote(missing))
+				continue
+			}
 		}
 		break
 	}
@@ -290,6 +332,12 @@ func (h *ResponsesHandler) handleStream(ctx context.Context, w http.ResponseWrit
 			if err := writeText(rest); err != nil {
 				return
 			}
+		}
+	} else if len(calls) == 0 && correctionSilent {
+		// 静默纠正那一轮没有任何增量下发；模型若改成纯文字回答，
+		// 必须在这里把整段正文补出去，否则客户端只收到空 message。
+		if err := writeText(finalText); err != nil {
+			return
 		}
 	}
 	if !messageOpen && len(calls) == 0 {

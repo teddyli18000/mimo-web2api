@@ -21,4 +21,5 @@ export const suiteNames = [
   'e2e/streaming',
   'e2e/logging',
   'e2e/client-compat',
+  'e2e/compat-dsh',
 ];
