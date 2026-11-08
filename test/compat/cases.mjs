@@ -131,6 +131,43 @@ export async function runCases(t, driver) {
     assert.ok(upstream.chatRequests().at(-1).body.query.includes('[Correction]'), '纠正提示没进 query');
   });
 
+  // 真机抓到：模型把包装标签和内部闭合写串，配对正则删不干净，
+  // `<tool_calls>\n\n</function>` 会作为正文发给客户端。
+  if (fake) await t.test('错配闭合的工具标记不会漏进 content', async () => {
+    upstream.reset();
+    upstream.onChat({ text: '<tool_calls>\n<function=glob>\n<parameter name="pattern">*</parameter>\n</function>\n</function>' });
+    const res = await chat([{ role: 'user', content: q1 }]);
+    assert.equal(res.status, 200, res.text.slice(0, 300));
+    const msg = res.json.choices[0].message;
+    const calls = msg.tool_calls || [];
+    assertCallsLegal(calls, '畸形闭合');
+    assert.equal(calls.length, 1, `应解析出 1 个调用: ${JSON.stringify(calls)}`);
+    assert.ok(!String(msg.content || '').includes('<tool_'), `content 残留标签: ${msg.content}`);
+    assert.ok(!String(msg.content || '').includes('</function'), `content 残留标签: ${msg.content}`);
+  });
+
+  // DSH 实际用 stream:true，前面的用例都是非流式，覆盖不到 SSE 契约
+  await t.test('流式 DSH 形状：SSE 契约与 content 无残片', async () => {
+    if (fake) {
+      upstream.reset();
+      upstream.onChat({ text: toolText('glob', { pattern: '**/*' }) });
+    }
+    const res = await chat([{ role: 'user', content: q1 }], { stream: true });
+    assert.equal(res.status, 200, res.text.slice(0, 300));
+    const p = parseStreamChunks(res.text);
+    assert.equal(p.done, true, `必须以 [DONE] 收尾: ${res.text.slice(-200)}`);
+    assert.equal(p.ids.length, 1, `同一个流必须共用 id: ${p.ids.join(',')}`);
+    assertCallsLegal(p.calls, '流式');
+    assert.ok(!p.content.includes('<tool_') && !p.content.includes('</function'),
+      `流式 content 残留标签: ${p.content}`);
+    if (fake) {
+      assert.deepEqual(p.finish, ['tool_calls']);
+      assert.equal(p.calls.length, 1);
+      assert.equal(p.calls[0].function.name, 'glob');
+      assert.deepEqual(JSON.parse(p.calls[0].function.arguments), { pattern: '**/*' });
+    }
+  });
+
   await t.test('工具结果回传：模型能接着往下走', async () => {
     if (fake) {
       upstream.reset();

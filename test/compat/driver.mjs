@@ -123,6 +123,8 @@ export async function createRealDriver({ bin, configPath }) {
     upstream: null,
     api: createApi({ base, apiKey, timeout: 180_000 }),
     redact,
+    // 排障用：网关输出经过 redact，绝不把凭据带出来
+    logs: () => redact(logTail),
     stop,
   };
 }

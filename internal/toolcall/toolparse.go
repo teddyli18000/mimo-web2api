@@ -538,6 +538,14 @@ func HasToolCallSyntax(text string) bool {
 		percentToolRe.MatchString(text)
 }
 
+// strayToolTagRe 删掉孤立的开/闭标签。
+//
+// 真机实测：模型会把包装标签和内部标签的闭合写串（`<tool_calls>` 开头、
+// `</function>` 结尾），配对正则一个都匹配不上，结果 content 里残留
+// `<tool_calls>\n\n\n</function>` 这种残片，客户端当作正文显示出来。
+// 所以成对块删完之后，必须再单独清一次标签本身。
+var strayToolTagRe = regexp.MustCompile(`(?is)</?\s*(?:tool_calls|tool_call|function_calls|function|invoke|parameter|antml:invoke|antml:parameter)\b[^>]*>`)
+
 func StripToolCallSyntax(text string) string {
 	if text == "" {
 		return ""
@@ -551,5 +559,8 @@ func StripToolCallSyntax(text string) string {
 	result = regexp.MustCompile(`(?is)<invoke\b[^>]*>[\s\S]*?</invoke>`).ReplaceAllString(result, "")
 	// Strip MiMo Code native % ToolName args lines
 	result = percentToolRe.ReplaceAllString(result, "")
+	// 错配闭合 / DSML 转普通标签后剩下的孤立标签
+	result = normalizeDSMLText(result)
+	result = strayToolTagRe.ReplaceAllString(result, "")
 	return strings.TrimSpace(result)
 }

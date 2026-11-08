@@ -67,6 +67,31 @@ func TestCorrectionNote(t *testing.T) {
 	}
 }
 
+// 真机实测：模型把包装标签与内部标签的闭合写串，只留半截。
+// 清洗后 content 不能有任何标签残片，否则客户端会把 XML 当正文显示。
+func TestStripToolCallSyntaxCleansMismatchedClosers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"错配闭合", "<tool_calls>\n\n\n</function>", ""},
+		{"说明文字 + 错配闭合", "好的，我来查一下。\n<tool_calls>\n\n</function>", "好的，我来查一下。"},
+		{"孤立包装标签", "前文 <tool_calls> 后文", "前文  后文"},
+		{"DSML 残片", "前文 </|DSML|invoke> 后文", "前文  后文"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := StripToolCallSyntax(tc.in)
+			if got != tc.want {
+				t.Fatalf("StripToolCallSyntax(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if strings.Contains(got, "<tool_") || strings.Contains(got, "</function") {
+				t.Fatalf("仍有标签残片: %q", got)
+			}
+		})
+	}
+}
+
 func TestParseBareInvokeHasEmptyArgs(t *testing.T) {
 	text := "<tool_calls>\n<invoke name=\"glob\"></invoke>\n</tool_calls>"
 	calls := ParseToolCallsFromText(text)
