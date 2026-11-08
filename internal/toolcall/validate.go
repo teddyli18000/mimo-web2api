@@ -20,11 +20,13 @@ func MissingRequired(calls []ParsedToolCall, tools []adapter.OpenAITool) []strin
 		return nil
 	}
 	required := make(map[string][]string, len(tools))
+	known := make(map[string]bool, len(tools))
 	for _, t := range tools {
 		name := strings.TrimSpace(t.Function.Name)
 		if name == "" {
 			continue
 		}
+		known[name] = true
 		params, ok := t.Function.Parameters.(map[string]interface{})
 		if !ok {
 			continue
@@ -34,22 +36,30 @@ func MissingRequired(calls []ParsedToolCall, tools []adapter.OpenAITool) []strin
 			required[name] = keys
 		}
 	}
-	if len(required) == 0 {
+	if len(known) == 0 {
 		return nil
 	}
 
 	var missing []string
 	seen := make(map[string]bool)
+	add := func(label string) {
+		if !seen[label] {
+			seen[label] = true
+			missing = append(missing, label)
+		}
+	}
 	for _, call := range calls {
+		// 模型凭记忆猜工具名（read_file / list_dir / run_command）时，
+		// 客户端查表必然失败。这种调用和缺必填参数一样，都该重问而不是放行。
+		if !known[call.Name] {
+			add(call.Name + " (unknown tool)")
+			continue
+		}
 		for _, key := range required[call.Name] {
 			if _, ok := call.Input[key]; ok {
 				continue
 			}
-			label := call.Name + "." + key
-			if !seen[label] {
-				seen[label] = true
-				missing = append(missing, label)
-			}
+			add(call.Name + "." + key)
 		}
 	}
 	return missing
@@ -82,8 +92,9 @@ func CorrectionNote(missing []string) string {
 	if len(missing) == 0 {
 		return ""
 	}
-	return "\n\n[Correction] Your previous tool call was rejected because it omitted required parameter(s): " +
+	return "\n\n[Correction] Your previous tool call was rejected: " +
 		strings.Join(missing, ", ") +
-		". Re-emit the complete <tool_calls> block with one <parameter name=\"...\">VALUE</parameter> line for EVERY parameter marked * in the tool list. " +
+		". Use a tool name that appears in the tool list below, verbatim, and re-emit the complete <tool_calls> block " +
+		"with one <parameter name=\"...\">VALUE</parameter> line for EVERY parameter marked * in that tool's signature. " +
 		"An <invoke> with no parameters is invalid. Do not answer in prose."
 }

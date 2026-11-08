@@ -47,11 +47,14 @@ func TestMissingRequired(t *testing.T) {
 	}
 }
 
-func TestMissingRequiredIgnoresUnknownTools(t *testing.T) {
+// 模型凭记忆猜工具名（read_file / list_dir）时，客户端查表必然失败，
+// 必须像缺必填参数一样识别出来并重问。
+func TestMissingRequiredFlagsUnknownTools(t *testing.T) {
 	tools := []adapter.OpenAITool{schema("glob", "pattern")}
-	calls := []ParsedToolCall{{Name: "made_up_tool", Input: map[string]any{}}}
-	if got := MissingRequired(calls, tools); len(got) != 0 {
-		t.Fatalf("未声明的工具不应产生缺失项，实际 %v（交给客户端报未知工具即可）", got)
+	calls := []ParsedToolCall{{Name: "read_file", Input: map[string]any{"path": "README.md"}}}
+	got := MissingRequired(calls, tools)
+	if len(got) != 1 || !strings.Contains(got[0], "unknown tool") {
+		t.Fatalf("未声明的工具应被标出，实际 %v", got)
 	}
 }
 

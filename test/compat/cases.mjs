@@ -195,6 +195,77 @@ export async function runCases(t, driver) {
     }
   });
 
+  // 三条协议都必须有同样的纠正能力，不能只修 DSH 用的那一条
+  if (fake) await t.test('Anthropic：漏必填参数自动纠正，不把残缺 tool_use 交给客户端', async () => {
+    upstream.reset();
+    upstream.onChat({ text: toolText('glob') });                          // 缺 pattern
+    upstream.onChat({ text: toolText('glob', { pattern: '**/*' }) });     // 纠正后
+    const aTools = TOOLS.slice(0, 12).map(t => ({
+      name: t.function.name,
+      description: t.function.description || '',
+      input_schema: t.function.parameters || {},
+    }));
+    const res = await api.messages({
+      model: 'mimo-v2.6-pro', max_tokens: 256, tools: aTools,
+      system: SYSTEM.slice(0, 1500),
+      messages: [{ role: 'user', content: '请用 glob 工具列一下文件。' }],
+    });
+    assert.equal(res.status, 200, res.text.slice(0, 300));
+    const blocks = res.json?.content || [];
+    const use = blocks.filter(b => b.type === 'tool_use');
+    assert.equal(use.length, 1, `应有 1 个合法 tool_use: ${JSON.stringify(blocks)}`);
+    assert.equal(use[0].name, 'glob');
+    assert.ok(use[0].input?.pattern, `tool_use 缺必填参数: ${JSON.stringify(use[0].input)}`);
+    assert.equal(upstream.chatRequests().length, 2, '应重问上游一次');
+    assert.ok(upstream.chatRequests().at(-1).body.query.includes('[Correction]'));
+  });
+
+  if (fake) await t.test('模型猜了未声明的工具名：网关重问而不是放行', async () => {
+    upstream.reset();
+    upstream.onChat({ text: toolText('read_file', { path: 'README.md' }) }); // DSH 里不存在
+    upstream.onChat({ text: 'ok，改用声明过的工具。' });
+    const res = await chat([{ role: 'user', content: q1 }]);
+    assert.equal(res.status, 200, res.text.slice(0, 300));
+    const calls = res.json?.choices?.[0]?.message?.tool_calls || [];
+    assertCallsLegal(calls, '未知工具纠正');
+    assert.equal(upstream.chatRequests().length, 2, '应重问上游一次');
+    const query = upstream.chatRequests().at(-1).body.query;
+    assert.ok(query.includes('[Correction]') && query.includes('unknown tool'),
+      `纠正提示应点名未知工具: ${query.slice(-400)}`);
+  });
+
+  if (fake) await t.test('流式纠正后模型改纯文字：正文不能丢', async () => {
+    // chat/completions 流式
+    upstream.reset();
+    upstream.onChat({ text: toolText('glob') });
+    upstream.onChat({ text: '列目录工具暂时不可用，我直接说明。' });
+    const res = await chat([{ role: 'user', content: q1 }], { stream: true });
+    assert.equal(res.status, 200, res.text.slice(0, 300));
+    const p = parseStreamChunks(res.text);
+    assert.ok(p.content.includes('列目录工具暂时不可用'), `流式正文丢了: ${p.content}`);
+    assert.equal(p.done, true);
+
+    // responses 流式
+    upstream.reset();
+    upstream.onChat({ text: toolText('glob') });
+    upstream.onChat({ text: '读文件工具暂时不可用。' });
+    const rTools = TOOLS.slice(0, 12).map(t => ({
+      type: 'function', name: t.function.name,
+      description: t.function.description || '', parameters: t.function.parameters || {},
+    }));
+    const r = await api.post('/v1/responses', {
+      model: 'mimo-v2.6-pro', tools: rTools, stream: true,
+      input: '请用 read 工具读 README.md。',
+    });
+    const deltas = r.text.split(/\r?\n/)
+      .filter(l => l.startsWith('data: '))
+      .map(l => { try { return JSON.parse(l.slice(6)); } catch { return null; } })
+      .filter(o => o?.type === 'response.output_text.delta')
+      .map(o => o.delta).join('');
+    assert.ok(deltas.includes('读文件工具暂时不可用'),
+      `responses 流式正文丢了: deltas=${JSON.stringify(deltas)} raw=${JSON.stringify(r.text.slice(0, 900))}`);
+  });
+
   if (fake) await t.test('超预算 system：契约不被截断、query 不超上限', async () => {
     upstream.reset();
     upstream.onChat({ text: 'ok' });
@@ -217,11 +288,11 @@ export async function runCases(t, driver) {
       description: t.function.description || '',
       parameters: t.function.parameters || {},
     }));
-    if (fake) upstream.onChat({ text: toolText('read', { file_path: 'README.md' }) });
+    if (fake) upstream.onChat({ text: toolText('glob', { pattern: '**/*' }) });
     const res = await api.post('/v1/responses', {
       model: 'mimo-v2.6-pro', tools: rTools,
       instructions: SYSTEM.slice(0, 1500),
-      input: '请调用 read 工具读取 README.md，不要直接回答。',
+      input: '请调用 glob 工具列出文件，不要直接回答。',
     });
     assert.equal(res.status, 200, res.text.slice(0, 300));
     const call = (res.json?.output || []).find(o => o.type === 'function_call');

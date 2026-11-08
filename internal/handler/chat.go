@@ -658,6 +658,7 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	useAnchorA := !isNew && turnQuestionA == "" && taskAnchorA != ""
 
 	var compressedFullA string
+	var toolCorrectionA string
 	buildQueryA := func(full bool) string {
 		if full && compressedFullA != "" {
 			return compressedFullA
@@ -669,6 +670,9 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		var extra []string
 		if !full && useAnchorA {
 			extra = append(extra, "Current task (the user's request you are working on): "+taskAnchorA)
+		}
+		if toolCorrectionA != "" {
+			extra = append(extra, toolCorrectionA)
 		}
 		if full {
 			rts = compressRoleTexts(ctx, client, rts, routeResult.Model, budgetA)
@@ -732,6 +736,8 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		// messageStarted 单独记：keepalive 可能已经写过响应头，
 		// 但 message_start 事件必须且只能发一次。
 		messageStarted bool
+		// 只记正文；thinking_delta 不算，否则思考块会挡住纠正重试。
+		contentCommittedA bool
 	)
 	if req.Stream {
 		sw = newSSEWriter(w)
@@ -810,11 +816,15 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		if err := ensureText(); err != nil {
 			return err
 		}
-		return sw.EventName("content_block_delta", adapter.MakeAnthropicStreamEvent("content_block_delta", map[string]interface{}{
+		if err := sw.EventName("content_block_delta", adapter.MakeAnthropicStreamEvent("content_block_delta", map[string]interface{}{
 			"type":  "content_block_delta",
 			"index": textIdx,
 			"delta": map[string]interface{}{"type": "text_delta", "text": delta},
-		}))
+		})); err != nil {
+			return err
+		}
+		contentCommittedA = true
+		return nil
 	}
 
 	onReasoning := func(delta string) error {
@@ -856,13 +866,15 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		effort:   effortA,
 	}
 
+	// 缺必填参数时静默重问一次：第一轮可能已经吐过 thinking，不能重复下发。
+	silentCorrectionA := false
+	correctionSilentA := false
 	for attempt := 0; attempt < 2; attempt++ {
 		argsA.query = query
 		argsA.convID = curConvID
 		argsA.parentID = curParentID
 
-		var err error
-		result, err = runWebStream(ctx, client, argsA, streamHandlers{
+		handlers := streamHandlers{
 			OnStart: func() {
 				if sw != nil {
 					go sw.Keepalive(ctx, sseKeepaliveInterval)
@@ -870,7 +882,14 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			},
 			OnReasoning: onReasoning,
 			OnContent:   onContent,
-		})
+		}
+		correctionSilentA = silentCorrectionA
+		if silentCorrectionA {
+			handlers = streamHandlers{}
+		}
+
+		var err error
+		result, err = runWebStream(ctx, client, argsA, handlers)
 		if err != nil {
 			reportAccount(h.pool, client, err)
 			log.Printf("[error] Anthropic web chat (attempt %d): %v", attempt+1, err)
@@ -919,6 +938,23 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			abortStream(sw)
 			writeAnthropicError(w, http.StatusBadGateway, "mimo returned an empty response (after retry)")
 			return
+		}
+
+		// 与 OpenAI 路径一致：工具调用漏必填参数时带纠正提示重问一次。
+		if hasTools && attempt == 0 && (sw == nil || !contentCommittedA) {
+			calls := normalizeToolNames(toolcall.ParseToolCallsFromText(strings.TrimSpace(result.Text)), openaiToolsA)
+			if missing := toolcall.MissingRequired(calls, openaiToolsA); len(missing) > 0 {
+				log.Printf("[retry] Anthropic incomplete tool call, missing %v", missing)
+				guard = nil
+				silentCorrectionA = true
+				toolCorrectionA = toolcall.CorrectionNote(missing)
+				compressedFullA = ""
+				replacedFrom = curConvID
+				curConvID = randomHex32()
+				curParentID = "0"
+				query = buildQueryA(true)
+				continue
+			}
 		}
 
 		break
@@ -1046,6 +1082,11 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 				if err := writeText(rest); err != nil {
 					return
 				}
+			}
+		} else if correctionSilentA {
+			// 静默纠正那一轮没有任何增量下发；模型改成纯文字时补发整段
+			if err := writeText(finalText); err != nil {
+				return
 			}
 		}
 		// 至少给一个 text 块：即使一个字都没有，content 数组也得有形状
