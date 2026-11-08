@@ -58,10 +58,12 @@ export function parseStreamChunks(text) {
 }
 
 // 结构不变量：两种模式都必须满足。模型可以不调工具，但一旦调了就必须是合法调用。
-function assertCallsLegal(calls, label) {
+// declared 是本次请求实际声明的工具名集合：只声明 12 个工具时，模型调第 13 个
+// 同样会让客户端查表失败，不能拿完整的 50 个名字放行。
+function validateCalls(calls, label, declared = KNOWN) {
   for (const c of calls) {
     const name = c.function?.name ?? c.name;
-    assert.ok(KNOWN.has(name), `${label}: 工具名 ${JSON.stringify(name)} 不在声明的 50 个里`);
+    assert.ok(declared.has(name), `${label}: 工具名 ${JSON.stringify(name)} 不在本次声明的 ${declared.size} 个工具里`);
     let args;
     try { args = JSON.parse(c.function?.arguments ?? c.arguments ?? '{}'); }
     catch (e) { assert.fail(`${label}: arguments 不是合法 JSON: ${e.message}`); }
@@ -78,6 +80,17 @@ export async function runCases(t, driver) {
   const { api, upstream } = driver;
   const fake = !!upstream;
   const q1 = '先列一下这个仓库根目录有哪些文件。请调用 glob 工具，不要直接用文字回答。';
+
+  // real 模式最大的陷阱：模型全程用文字作答时 assertCallsLegal([]) 直接通过，
+  // 结果 5/5 绿，却一次工具链路都没测到。这里累计真正观察到的合法调用数，
+  // 末尾强制断言 >= 1；没覆盖到就红，不假装通过。
+  let observedToolCalls = 0;
+  const checkCalls = (calls, label, declared) => {
+    observedToolCalls += calls.length;
+    if (declared) validateCalls(calls, label, declared);
+    else validateCalls(calls, label);
+  };
+
 
   const chat = (messages, extra = {}) => api.chat({
     model: 'mimo-v2.6-pro', tools: TOOLS,
@@ -102,7 +115,7 @@ export async function runCases(t, driver) {
     const res = await chat([{ role: 'user', content: q1 }]);
     assert.equal(res.status, 200, res.text.slice(0, 300));
     let calls = res.json?.choices?.[0]?.message?.tool_calls || [];
-    assertCallsLegal(calls, '非流式');
+    checkCalls(calls, '非流式');
     if (fake) {
       assert.equal(calls.length, 1, `期望 1 个调用: ${JSON.stringify(calls)}`);
       assert.equal(calls[0].function.name, 'glob');
@@ -124,7 +137,7 @@ export async function runCases(t, driver) {
     const res = await chat([{ role: 'user', content: q1 }]);
     assert.equal(res.status, 200, res.text.slice(0, 300));
     const calls = res.json?.choices?.[0]?.message?.tool_calls || [];
-    assertCallsLegal(calls, '纠正重试');
+    checkCalls(calls, '纠正重试');
     assert.equal(calls.length, 1, `应该只有 1 个合法调用: ${JSON.stringify(calls)}`);
     assert.deepEqual(JSON.parse(calls[0].function.arguments), { pattern: '**/*' });
     assert.equal(upstream.chatRequests().length, 2, '应该重问了上游一次');
@@ -140,7 +153,7 @@ export async function runCases(t, driver) {
     assert.equal(res.status, 200, res.text.slice(0, 300));
     const msg = res.json.choices[0].message;
     const calls = msg.tool_calls || [];
-    assertCallsLegal(calls, '畸形闭合');
+    checkCalls(calls, '畸形闭合');
     assert.equal(calls.length, 1, `应解析出 1 个调用: ${JSON.stringify(calls)}`);
     assert.ok(!String(msg.content || '').includes('<tool_'), `content 残留标签: ${msg.content}`);
     assert.ok(!String(msg.content || '').includes('</function'), `content 残留标签: ${msg.content}`);
@@ -157,7 +170,7 @@ export async function runCases(t, driver) {
     const p = parseStreamChunks(res.text);
     assert.equal(p.done, true, `必须以 [DONE] 收尾: ${res.text.slice(-200)}`);
     assert.equal(p.ids.length, 1, `同一个流必须共用 id: ${p.ids.join(',')}`);
-    assertCallsLegal(p.calls, '流式');
+    checkCalls(p.calls, '流式');
     assert.ok(!p.content.includes('<tool_') && !p.content.includes('</function'),
       `流式 content 残留标签: ${p.content}`);
     if (fake) {
@@ -175,7 +188,7 @@ export async function runCases(t, driver) {
     }
     const first = await chat([{ role: 'user', content: q1 }]);
     const calls = first.json?.choices?.[0]?.message?.tool_calls || [];
-    assertCallsLegal(calls, '第一轮');
+    checkCalls(calls, '第一轮');
     if (!calls.length) return; // real 模式可能直接文字作答，不算失败
 
     if (fake) upstream.onChat({ text: '已读取，仓库里有 README.md、AGENTS.md、main.go。' });
@@ -186,7 +199,7 @@ export async function runCases(t, driver) {
       { role: 'user', content: '请读一下 README.md 前 20 行，调用 read 工具。' },
     ]);
     assert.equal(second.status, 200, second.text.slice(0, 300));
-    assertCallsLegal(second.json?.choices?.[0]?.message?.tool_calls || [], '第二轮');
+    checkCalls(second.json?.choices?.[0]?.message?.tool_calls || [], '第二轮');
     if (fake) {
       const query = upstream.chatRequests().at(-1).body.query;
       assert.ok(query.includes('[Tool Result]'), `工具结果没回传:\n${query.slice(-800)}`);
@@ -214,8 +227,8 @@ export async function runCases(t, driver) {
     const blocks = res.json?.content || [];
     const use = blocks.filter(b => b.type === 'tool_use');
     assert.equal(use.length, 1, `应有 1 个合法 tool_use: ${JSON.stringify(blocks)}`);
-    assert.equal(use[0].name, 'glob');
-    assert.ok(use[0].input?.pattern, `tool_use 缺必填参数: ${JSON.stringify(use[0].input)}`);
+    checkCalls(use.map(b => ({ name: b.name, arguments: JSON.stringify(b.input || {}), id: b.id })),
+      'anthropic', new Set(aTools.map(t => t.name)));
     assert.equal(upstream.chatRequests().length, 2, '应重问上游一次');
     assert.ok(upstream.chatRequests().at(-1).body.query.includes('[Correction]'));
   });
@@ -227,7 +240,7 @@ export async function runCases(t, driver) {
     const res = await chat([{ role: 'user', content: q1 }]);
     assert.equal(res.status, 200, res.text.slice(0, 300));
     const calls = res.json?.choices?.[0]?.message?.tool_calls || [];
-    assertCallsLegal(calls, '未知工具纠正');
+    checkCalls(calls, '未知工具纠正');
     assert.equal(upstream.chatRequests().length, 2, '应重问上游一次');
     const query = upstream.chatRequests().at(-1).body.query;
     assert.ok(query.includes('[Correction]') && query.includes('unknown tool'),
@@ -297,10 +310,19 @@ export async function runCases(t, driver) {
     assert.equal(res.status, 200, res.text.slice(0, 300));
     const call = (res.json?.output || []).find(o => o.type === 'function_call');
     if (call) {
-      assertCallsLegal([{ name: call.name, arguments: call.arguments, call_id: call.call_id }], 'responses');
+      checkCalls([{ name: call.name, arguments: call.arguments, call_id: call.call_id }],
+        'responses', new Set(rTools.map(t => t.name)));
       assert.ok(call.call_id, '缺 call_id，无法回传 function_call_output');
       assert.equal(call.status, 'completed');
     }
     if (fake) assert.ok(call, `期望 function_call 项: ${JSON.stringify(res.json?.output)}`);
+  });
+
+  // 防假绿：真机至少得真的出现过一次工具调用，否则上面所有结构断言
+  // 都是空数组上的空转，报告全绿却什么都没验证到。
+  await t.test('覆盖有效性：确实观察到工具调用（不是空断言全绿）', async () => {
+    assert.ok(observedToolCalls >= 1,
+      `本次 ${driver.mode} 运行观察到 ${observedToolCalls} 次工具调用；` +
+      '结构断言全部落在空数组上，等于没测到工具链路');
   });
 }

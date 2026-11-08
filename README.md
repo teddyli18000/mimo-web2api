@@ -311,6 +311,22 @@ curl http://localhost:8080/v1/messages \
 | 契约 / E2E | 真实网关二进制 + 本地假上游（`test/harness/fake-upstream.mjs`），覆盖管理接口、OpenAI / Anthropic、会话复用、图片、工具调用、通道选择、重试 | 否 |
 | 浏览器 | 真 Chromium 加载真扩展，点弹窗把 cookie 同步进真网关（Playwright + xvfb） | 否（注入 dummy cookie） |
 | 真实上游 | [`test/sdk/`](test/sdk/README.md) 的 19 个脚本，用官方 SDK 打真实上游 | 是 |
+| 兼容性 | [`test/compat/`](test/compat/README.md)：同一套 DSH 形状用例，fake 上游（CI 跑这个）与真实上游（本地跑）各一遍 | 仅 real 模式 |
+
+### fake 先过，再打真机
+
+`test/compat/` 用 DSH 的真实形状（50 个工具 + 长系统提示词）跑列目录 → 读文件 → 结果回传 → 收尾，并校验工具名、必填参数、SSE 契约、超预算下契约不被截断。两种上游共用 `cases.mjs`：
+
+```bash
+# 1) 假上游（CI 里就是这一套，必须先全绿）
+node test/compat/run.mjs --mode fake --bin dist/mimo-web2api
+
+# 2) 真机（fake 全绿之后；只传配置「路径」，内容不打印、不写进项目）
+MIMO_REAL_CONFIG=C:\\path\\to\\config.json \
+  node test/compat/run.mjs --mode real --bin dist/mimo-web2api
+```
+
+real 模式把配置复制到系统临时目录、进程结束即删，所有报错经脱敏；`fixtures/` 只有工具 schema 和系统提示词文本。另外提供 `node test/compat/diagnose.mjs <bin> <config>` 打印每轮真实工具调用的名称与参数，用来核对「不是模型没调工具导致的空断言全绿」。
 
 本地跑内部测试：
 
