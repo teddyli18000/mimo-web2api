@@ -112,7 +112,7 @@ func main() {
 	messagesHandler := handler.NewMessagesHandler(accountPool, convStore)
 	adminHandler := handler.NewAdminHandler(accountPool)
 	// OpenAI Responses API（新端点）；文本对话，图片与工具仍走 chat/completions
-	responsesHandler := handler.NewResponsesHandler(accountPool)
+	responsesHandler := handler.NewResponsesHandler(accountPool, convStore)
 
 	// 未匹配的 API 路径必须回 JSON：客户端拿到 200 + index.html 时
 	// 报的是 "did not answer with JSON"，比 404 难查一个数量级。

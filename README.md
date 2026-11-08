@@ -221,7 +221,7 @@ curl http://localhost:8080/v1/messages \
 
 ## 特性
 
-- 🔧 **工具调用** — OpenAI / Anthropic 双格式 tools，注入格式说明 + DSML/XML 解析，三模型实测可用
+- 🔧 **工具调用** — `/v1/chat/completions`（`tool_calls`）、`/v1/messages`（`tool_use`）、`/v1/responses`（`function_call` + `function_call_output`）三种协议都支持；注入格式说明 + DSML/XML 解析，真机实测可用
 - 🖼️ **图片与文本文件输入** — 按上游资源接口上传并绑定对话，三模型均可识图；相同内容走缓存
 - 🔥 **多协议兼容** — `/v1/chat/completions`、`/v1/responses`、`/v1/messages`（均含流式）
 - ⚡ **真流式** — 上游 SSE 出一段就转发一段，首字延迟等于上游首字延迟，而不是整段生成时间；思考链与正文按各自协议增量下发，工具标记跨 chunk 也不会漏进正文
