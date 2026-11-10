@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,19 +19,35 @@ import (
 	"github.com/teddyli18000/mimo-web2api/internal/toolcall"
 )
 
+// streamTailTagRe 只用于定位「工具语法从哪儿开始」，不用于删正文。
+var streamTailTagRe = regexp.MustCompile(`(?is)</?\s*(?:tool_calls|tool_call|function_calls|function|invoke|parameter|antml:invoke|antml:parameter)\b[^>]*>`)
+
+// streamTailPairRe 只删成对的完整工具块，不动孤立标签。
+var streamTailPairRe = regexp.MustCompile(`(?is)<tool_calls>[\s\S]*?</tool_calls>|<function=[^>]*>[\s\S]*?</function>|<invoke\b[^>]*>[\s\S]*?</invoke>|<tool_call>[\s\S]*?</tool_call>`)
+
 // cleanStreamTail 清掉流式收尾补发的文本里的工具标记残片。
 //
 // 真机实测：模型会吐一个没有任何 invoke 的空 `<tool_calls>\n</tool_calls>`；
 // MarkerGuard 把它扣住，但解析结果为 0 个调用时走「误判补发」分支，
 // 于是内部标记被当成正文发给客户端。
 //
-// 只在确实含标记时才清洗：普通正文（哪怕提到 "tool_calls" 这个词）原样返回，
-// 避免把用户可见的文字删掉。
+// 不能全局删标签：模型可能只是在正文里引用 `<tool_calls>` 这个字面量，
+// 删掉就是把用户可见的文字抹了。这里改成区间判定——从第一个工具标签到
+// 文本末尾若只由标签和空白组成，说明它是纯工具语法残片，整段截掉；
+// 否则只删成对块，孤立标签一律留给正文。
 func cleanStreamTail(text string) string {
 	if text == "" || !toolcall.HasToolCallSyntax(text) {
 		return text
 	}
-	return toolcall.StripToolCallSyntax(text)
+	loc := streamTailTagRe.FindStringIndex(text)
+	if loc == nil {
+		return text
+	}
+	tail := text[loc[0]:]
+	if strings.TrimSpace(streamTailTagRe.ReplaceAllString(tail, "")) == "" {
+		return strings.TrimSpace(text[:loc[0]])
+	}
+	return strings.TrimSpace(streamTailPairRe.ReplaceAllString(text, ""))
 }
 
 // sseKeepaliveInterval 等首字节/两个增量之间的心跳间隔。

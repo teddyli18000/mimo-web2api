@@ -255,6 +255,40 @@ export default defineSuite({
       });
     });
 
+    // 区间判定：尾部纯工具语法整段截掉，正文一个字不动
+    const contentOf = raw => raw.split(/\r?\n/)
+      .filter(l => l.startsWith('data: ') && !l.includes('[DONE]'))
+      .map(l => { try { return JSON.parse(l.slice(6)); } catch { return null; } })
+      .filter(Boolean)
+      .map(o => o.choices?.[0]?.delta?.content || '').join('');
+
+    await t.test('正文 + 尾部残片：残片清掉、正文完整保留', async () => {
+      await withStack({}, async ({ api, upstream }) => {
+        upstream.setChatDefault({ text: '这是结论，请照抄。\n<tool_calls>\n</invoke>' });
+        const res = await api.chat(chatRequest({
+          stream: true,
+          messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: 'hi' }],
+        }));
+        const text = contentOf(res.text);
+        assert.equal(text.includes('这是结论，请照抄。'), true, `正文被删改: ${JSON.stringify(text)}`);
+        assert.ok(!text.includes('</invoke>') && !text.includes('<tool_calls>'),
+          `残片没清掉: ${JSON.stringify(text)}`);
+      });
+    });
+
+    await t.test('正文引用裸标签：一个字都不能删', async () => {
+      await withStack({}, async ({ api, upstream }) => {
+        upstream.setChatDefault({ text: '请解释 <tool_calls> 这个标签的用法。' });
+        const res = await api.chat(chatRequest({
+          stream: true,
+          messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: 'hi' }],
+        }));
+        const text = contentOf(res.text);
+        assert.ok(text.includes('请解释 <tool_calls> 这个标签的用法。'),
+          `正文里的裸标签被误删: ${JSON.stringify(text)}`);
+      });
+    });
+
     await t.test('aggressive 模式只额外缩品牌词', async () => {
       await withStack({ PROMPT_CLEAN: 'aggressive' }, async ({ api, upstream }) => {
         upstream.onChat({ text: 'ok' });

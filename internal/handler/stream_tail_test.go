@@ -17,6 +17,8 @@ func TestCleanStreamTail(t *testing.T) {
 		{"含 invoke 的残片", "正文。\n<tool_calls>\n<invoke name=\"glob\"></invoke>\n</tool_calls>", "正文。"},
 		// 只提到关键词、没有实际标签时，一个字都不能动
 		{"纯关键词不动", "请解释 tool_calls 这个词的来历。", "请解释 tool_calls 这个词的来历。"},
+		// 正文里引用裸标签（没有闭合标签）不是工具语法，不能删词
+		{"裸标签引用不动", "请解释 <tool_calls> 这个标签的用法。", "请解释 <tool_calls> 这个标签的用法。"},
 		{"空串", "", ""},
 	}
 	for _, c := range cases {
