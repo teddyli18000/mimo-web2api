@@ -1,0 +1,222 @@
+// 提示词清洗：用假上游模拟「按连续短语判风控」，证明清洗层真的能让请求通过，
+// 同时验证用户数据逐字不动、工具契约不受影响、会话续轮不断链。
+//
+// 参考 ardeyouxipianyi/workbuddy2api-hub 的 sanitize_messages 方法论（规则表、
+// 按 role、最小改写、幂等、快路径），但规则集针对我们自己的上游与客户端。
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { defineSuite } from '../../harness/suite.mjs';
+import { startStack, chatRequest } from '../../harness/env.mjs';
+import { assertUpstreamIsLocal } from '../../harness/selfcheck.mjs';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SYSTEM = readFileSync(path.join(HERE, '../../compat/fixtures/dsh-system.txt'), 'utf8');
+
+// 客户端注入的连续指纹短语；上游按整段命中
+const FINGERPRINTS = [
+  'You are an AI agent powered by DeepSeek Harness.',
+  'are paths the user explicitly referenced.',
+  'Web GUI whose URL the runtime context names.',
+];
+
+const QUESTION = '请读一下 README.md 的前 20 行，并告诉我第 3 行写了什么。';
+const KEEP = [
+  'mimo-v2.6-pro',                       // 模型身份信息不能丢
+  'DeepSeek Harness',                    // 保守模式连品牌全名都保留
+  'Tokens prefixed with @',              // 整条 @ 引用规则要保留（只补一个词）
+  'Relative paths resolve from',
+  'The runtime context names the DeepSeek Harness implementation checkout.',
+];
+
+async function withStack(env, fn) {
+  const stack = await startStack({ gatewayOptions: { env } });
+  try {
+    await fn(stack);
+  } finally {
+    await stack.stop();
+  }
+}
+
+export default defineSuite({
+  name: 'e2e/prompt-clean',
+  tags: ['e2e'],
+  // 每条用例隔离一个网关进程（PROMPT_CLEAN 是进程级环境变量），
+  // 8 个 stack 在慢 CI 机器上需要比默认 180s 更宽的余量。
+  timeout: 300_000,
+  async run(t) {
+    // fail-closed 只做一次：每个用例都新建 stack，不必重复打 health
+    await withStack({}, async ({ api, upstream }) => {
+      await assertUpstreamIsLocal(t, { api, upstream });
+    });
+
+    await t.test('默认清洗：上游按指纹判风控时请求能通过', async () => {
+      await withStack({ PROMPT_CLEAN: 'conservative' }, async ({ api, upstream }) => {
+        upstream.setRiskFilter(FINGERPRINTS);
+        upstream.onChat({ text: 'README.md 第 3 行写的是「安装」一节。' });
+
+        const res = await api.chat(chatRequest({
+          messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: QUESTION }],
+        }));
+        assert.equal(res.status, 200, res.text.slice(0, 300));
+        assert.equal(upstream.riskHits, 0, `风控不该命中，实际命中 ${upstream.riskHits} 次`);
+        assert.equal(res.json.choices[0].message.content, 'README.md 第 3 行写的是「安装」一节。');
+
+        const q = upstream.chatRequests().at(-1).body.query;
+        for (const fp of FINGERPRINTS) {
+          assert.ok(!q.includes(fp), `指纹没被清洗掉: ${fp}`);
+        }
+        // 零信息损失：关键内容逐字保留
+        for (const keep of KEEP) {
+          assert.ok(q.includes(keep), `清洗丢了关键信息: ${keep}`);
+        }
+        // 用户提问逐字不动
+        assert.ok(q.includes(QUESTION), '用户提问被改写了');
+      });
+    });
+
+    await t.test('关掉清洗（PROMPT_CLEAN=off）：同一请求应被风控拒绝', async () => {
+      // 对照组：证明上一条的绿不是「风控模拟没生效」
+      await withStack({ PROMPT_CLEAN: 'off' }, async ({ api, upstream }) => {
+        upstream.setRiskFilter(FINGERPRINTS);
+        upstream.onChat({ text: 'should not be reached' });
+
+        const res = await api.chat(chatRequest({
+          messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: QUESTION }],
+        }));
+        assert.notEqual(res.status, 200, '未清洗时应被上游风控拒绝');
+        assert.ok(upstream.riskHits >= 1, '风控模拟应命中（网关可能重试 4xx）');
+        const q = upstream.chatRequests().at(-1).body.query;
+        assert.ok(q.includes(FINGERPRINTS[0]), 'off 模式下原文应原样送出');
+
+        // 风控模拟必须真的会拒绝原文：直接把原文当 query 打一次上游，
+        // 否则「默认清洗通过」可能只是风控模拟形同虚设。
+        const probe = await fetch(`${upstream.base}/open-apis/react/chat`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: SYSTEM }),
+        });
+        assert.equal(probe.status, 400, '风控模拟没有拒绝含指纹的原文');
+      });
+    });
+
+    await t.test('用户数据逐字不动：同句出现在 user 里不被改写', async () => {
+      await withStack({}, async ({ api, upstream }) => {
+        upstream.onChat({ text: 'ok' });
+        const userText = 'Tokens prefixed with @ are paths the user explicitly referenced. 请解释这句话。';
+        const res = await api.chat(chatRequest({
+          messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: userText }],
+        }));
+        assert.equal(res.status, 200, res.text.slice(0, 300));
+        const q = upstream.chatRequests().at(-1).body.query;
+        assert.ok(q.includes(userText), 'user 消息被改写了');
+      });
+    });
+
+    await t.test('工具契约不受清洗影响', async () => {
+      await withStack({}, async ({ api, upstream }) => {
+        upstream.onChat({ text: 'ok' });
+        const tools = [{
+          type: 'function',
+          function: {
+            name: 'read',
+            description: 'Path to read, resolved by the filesystem backend.',
+            parameters: {
+              type: 'object',
+              properties: { file_path: { type: 'string' } },
+              required: ['file_path'],
+            },
+          },
+        }];
+        const res = await api.chat(chatRequest({
+          tools,
+          messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: QUESTION }],
+        }));
+        assert.equal(res.status, 200, res.text.slice(0, 300));
+        const q = upstream.chatRequests().at(-1).body.query;
+        assert.ok(q.includes('<tool_calls>'), '调用格式契约被清洗掉了');
+        assert.ok(q.includes('read(file_path*:string)'), '工具签名被改写了');
+        assert.ok(q.includes('Every parameter marked *'), '参数规则被改写了');
+      });
+    });
+
+    await t.test('续轮会话不断链：清洗不改变 fingerprint', async () => {
+      await withStack({}, async ({ api, upstream }) => {
+        upstream.setChatDefault({ text: 'ok' });
+        const first = chatRequest({
+          messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: '第一问' }],
+        });
+        const a = await api.chat(first);
+        assert.equal(a.status, 200, a.text.slice(0, 300));
+
+        const second = await api.chat(chatRequest({
+          messages: [
+            { role: 'system', content: SYSTEM },
+            { role: 'user', content: '第一问' },
+            { role: 'assistant', content: 'ok' },
+            { role: 'user', content: '第二问' },
+          ],
+        }));
+        assert.equal(second.status, 200, second.text.slice(0, 300));
+        const q = upstream.chatRequests().at(-1).body.query;
+        assert.ok(q.includes('第二问'), q);
+        assert.ok(!q.includes('第一问'), `续轮不该重发完整历史:\n${q.slice(-400)}`);
+      });
+    });
+
+    await t.test('三条协议都清洗', async () => {
+      await withStack({}, async ({ api, upstream }) => {
+        upstream.setChatDefault({ text: 'ok' });
+        const aTools = [{
+          name: 'read', description: 'read a file',
+          input_schema: { type: 'object', properties: { file_path: { type: 'string' } } },
+        }];
+        const rTools = [{
+          type: 'function', name: 'read', description: 'read a file',
+          parameters: { type: 'object', properties: { file_path: { type: 'string' } } },
+        }];
+
+        const chat = await api.chat(chatRequest({
+          messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: 'hi' }],
+        }));
+        const anthropic = await api.messages({
+          model: 'mimo-v2.6-pro', max_tokens: 128, tools: aTools,
+          system: SYSTEM, messages: [{ role: 'user', content: 'hi' }],
+        });
+        const responses = await api.post('/v1/responses', {
+          model: 'mimo-v2.6-pro', tools: rTools,
+          instructions: SYSTEM, input: 'hi',
+        });
+
+        for (const [name, res] of [['chat', chat], ['anthropic', anthropic], ['responses', responses]]) {
+          assert.equal(res.status, 200, `${name}: ${res.text.slice(0, 200)}`);
+        }
+        const chatReqs = upstream.chatRequests();
+        const withSystem = chatReqs.filter(r => String(r.body?.query ?? '').includes('mimo-v2.6-pro'));
+        // 防假绿：三条协议的 system 都必须真的进了 query，否则「没有指纹」只是空转
+        assert.ok(withSystem.length >= 3,
+          `只有 ${withSystem.length}/${chatReqs.length} 条请求带了 system: ` +
+          chatReqs.map(r => String(r.body?.query ?? '').slice(0, 60)).join(' | '));
+        for (const req of chatReqs) {
+          for (const fp of FINGERPRINTS) {
+            assert.ok(!String(req.body?.query ?? '').includes(fp), `协议请求里残留指纹: ${fp}`);
+          }
+        }
+      });
+    });
+
+    await t.test('aggressive 模式只额外缩品牌词', async () => {
+      await withStack({ PROMPT_CLEAN: 'aggressive' }, async ({ api, upstream }) => {
+        upstream.onChat({ text: 'ok' });
+        const res = await api.chat(chatRequest({
+          messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: 'hi' }],
+        }));
+        assert.equal(res.status, 200, res.text.slice(0, 300));
+        const q = upstream.chatRequests().at(-1).body.query;
+        assert.ok(q.includes('mimo-v2.6-pro'), 'aggressive 也不能丢模型信息');
+        assert.ok(q.includes('Tokens prefixed with @'), 'aggressive 也不能丢规则');
+        assert.ok(!q.includes('DeepSeek Harness'), 'aggressive 应缩掉品牌全名');
+      });
+    });
+  },
+});

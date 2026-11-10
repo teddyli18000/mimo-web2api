@@ -3,10 +3,13 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/teddyli18000/mimo-web2api/internal/adapter"
+	"github.com/teddyli18000/mimo-web2api/internal/promptclean"
 )
 
 // =============================================================================
@@ -305,6 +308,22 @@ func isAnthropicToolResult(m adapter.AnthropicMessage) bool {
 func serializeMessagesAnthropic(msgs []adapter.AnthropicMessage, system string, maxChars int, extraSystem ...string) string {
 	return serializeRoleTexts(toRoleTextsAnthropic(msgs, system), maxChars, extraSystem...)}
 
+// cleanRoleTextsForUpstream 清洗客户端注入的身份指纹，并只记录规则名与次数
+// （绝不把提示词内容写进日志）。user/tool 逐字不动。
+func cleanRoleTextsForUpstream(rts []roleText) []roleText {
+	cleaned, stats := promptclean.CleanRoleTexts(rts)
+	if len(stats) == 0 {
+		return cleaned
+	}
+	parts := make([]string, 0, len(stats))
+	for name, n := range stats {
+		parts = append(parts, fmt.Sprintf("%s=%d", name, n))
+	}
+	sort.Strings(parts)
+	log.Printf("[promptclean] mode=%s rules=%s", promptclean.CurrentMode(), strings.Join(parts, ","))
+	return cleaned
+}
+
 // serializeRoleTexts 三段式渲染 + 长度截断（extraSystem 并入 System 段并计入预算）
 func serializeRoleTexts(rts []roleText, maxChars int, extraSystem ...string) string {
 	return serializeQuery(rts, maxChars, "", extraSystem...)
@@ -315,6 +334,13 @@ func serializeRoleTexts(rts []roleText, maxChars int, extraSystem ...string) str
 // 工具段必须单独计价：它承载的是调用格式与参数名，被截掉一半等于整轮工具调用作废。
 // 预算不够时的牺牲顺序是：历史/上下文 → 用户 system → 工具清单（保住格式契约头）→ 提问。
 func serializeQuery(rts []roleText, maxChars int, tools string, extraSystem ...string) string {
+	// 三条协议（chat/completions、messages、responses）都在这里收口，
+	// 清洗只作用于「发给上游的渲染文本」：convstore 的 fingerprint 与会话
+	// 落库用的仍是原始 roleTexts，规则升级或改开关都不会让延续会话断链。
+	// 工具契约、[System Instruction] 标记、[Correction] 提示是本网关生成的，
+	// 走 tools / extraSystem 参数，不在这里清洗。
+	rts = cleanRoleTextsForUpstream(rts)
+
 	var system []string
 	var rest []roleText
 	for _, m := range rts {

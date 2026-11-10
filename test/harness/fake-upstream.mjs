@@ -39,7 +39,7 @@ function route(req, res, url, record, state) {
     });
   }
   if (req.method === 'POST' && CHAT_PATHS.has(p)) {
-    return chat(req, res, state, p);
+    return chat(req, res, state, p, record);
   }
   if (req.method === 'POST' && p.endsWith('/open-apis/chat/conversation/save')) {
     return json(res, 200, { code: 0 });
@@ -108,7 +108,18 @@ function buildV2(script, state) {
   return out;
 }
 
-async function chat(req, res, state, path) {
+async function chat(req, res, state, path, record) {
+  // 模拟上游内容审核：按「连续短语」出现在 query 里判风控，命中就回业务错误。
+  // 有了这个能力才能测出清洗层到底有没有用（而不是只测「函数返回了改写后的字符串」）。
+  if (state.riskFilter) {
+    const q = String(record?.body?.query || '');
+    if (state.riskFilter.phrases.some(ph => q.includes(ph))) {
+      state.riskHits++;
+      const status = state.riskFilter.status || 400;
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(state.riskFilter.body || { code: status, msg: 'content rejected by upstream risk control' }));
+    }
+  }
   let script;
   if (state.chatQueue.length) {
     script = state.chatQueue.shift();
@@ -172,6 +183,8 @@ export async function startFakeUpstream({ defaultText } = {}) {
     seq: 0,
     scriptMisses: 0,
     parseFails: 0,
+    riskFilter: null,
+    riskHits: 0,
   };
 
   const server = createServer((req, res) => {
@@ -213,9 +226,15 @@ export async function startFakeUpstream({ defaultText } = {}) {
     uploadInfoRequests: () => filter(r => r.path === '/open-apis/resource/genUploadInfo'),
     parseRequests: () => filter(r => r.path === '/open-apis/resource/parse'),
     get scriptMisses() { return state.scriptMisses; },
+    get riskHits() { return state.riskHits; },
     /** 排一条 chat 响应；每来一个 chat 请求按 FIFO 取一条 */
     onChat(script) { state.chatQueue.push(script); },
     setChatDefault(script) { state.chatDefault = script; },
+    /** 模拟上游按连续短语判风控；phrases 命中 query 时回 status（默认 400） */
+    setRiskFilter(phrases, { status = 400, body } = {}) {
+      state.riskFilter = { phrases, status, body };
+    },
+    clearRiskFilter() { state.riskFilter = null; },
     /** 让接下来 n 次 resource/parse 返回业务失败（验证「上传失败被吞」的现有行为） */
     setParseFailure(n) { state.parseFails = n; },
     reset() { state.requests.length = 0; state.chatQueue.length = 0; },

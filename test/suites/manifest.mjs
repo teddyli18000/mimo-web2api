@@ -22,4 +22,5 @@ export const suiteNames = [
   'e2e/logging',
   'e2e/client-compat',
   'e2e/compat-dsh',
+  'e2e/prompt-clean',
 ];

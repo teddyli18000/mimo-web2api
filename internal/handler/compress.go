@@ -43,7 +43,9 @@ func compressRoleTexts(ctx context.Context, client *mimo.WebClient, rts []roleTe
 	}
 
 	cut := len(rest) - compressKeepMsgs
-	older := rest[:cut]
+	// 摘要请求也是发给同一个上游的，历史里的身份指纹同样要清洗；
+	// 否则「主请求洗干净了、摘要请求却把原文送出去」，风控仍会命中。
+	older := cleanRoleTextsForUpstream(rest[:cut])
 	recent := rest[cut:]
 
 	var b strings.Builder

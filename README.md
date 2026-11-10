@@ -264,7 +264,23 @@ curl http://localhost:8080/v1/messages \
 
 > 首次启动会在 `config.json` 同目录生成 `secret.key`（32 字节）。旧版本的明文配置会被自动读取并立即加密重写。
 
-环境变量（可选）：`PORT`、`API_KEY`、`CONFIG_PATH`、`NO_BROWSER_OPEN=1`（禁止启动时自动开浏览器）。
+环境变量（可选）：`PORT`、`API_KEY`、`CONFIG_PATH`、`NO_BROWSER_OPEN=1`（禁止启动时自动开浏览器）、`PROMPT_CLEAN`（提示词清洗模式，见下）。
+
+## 提示词清洗
+
+agent 客户端（DSH / Claude Code / Codex）会往 `system` 注入带产品名的自述句。这些整段原样进入发给上游的单条 query 时，可能被上游内容审核按「连续短语」判风控。网关在序列化出口做一层**最小改写**：只打断已登记的连续短语，不改语义、不删词。
+
+| 值 | 行为 |
+|---|---|
+| `conservative`（默认） | 三处零信息损失改写：身份句补 `that is`、`@` 引用段补 `that`、GUI 描述段换句尾语序。产品名与模型名全部保留 |
+| `aggressive` | 额外把散文里的 `DeepSeek Harness` 缩成 `DeepSeek`（唯一会丢词的规则；路径/标识符不动） |
+| `off` / `0` | 完全不改写 |
+
+规则集参考了 [workbuddy2api-hub](https://github.com/ardeyouxipianyi/workbuddy2api-hub) 的 `sanitize_messages` 方法论（规则表、按 role、幂等、字面量快路径），但**没有照抄它的正则**：那些规则是针对 WorkBuddy/DeepSeek 渠道校验逐段实测出来的，我们的上游是 MiMo 网页端，审核规则不同。这里只保留语义不变的改写；`user` / `tool` 消息是用户数据，任何模式下都逐字不动。
+
+清洗只作用于「发给上游的渲染文本」：会话指纹与 `conversations.json` 落库仍用原文，规则升级或切换开关不会让延续会话断链。工具契约、`[System Instruction]` 标记、`[Correction]` 提示是本网关生成的，不进入清洗。命中时日志只记规则名与次数（`[promptclean] mode=conservative rules=...`），不记提示词内容。
+
+验证：`e2e/prompt-clean` 用假上游模拟「按连续短语判风控」，对照组 `PROMPT_CLEAN=off` 必须被拒、默认模式必须通过，并断言用户提问、模型信息、工具签名逐字保留。
 
 日志相关（可选）：
 
