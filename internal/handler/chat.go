@@ -455,9 +455,10 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 			}
 		} else {
 			// 没解析出工具调用：把守卫扣押的尾巴补发完
-			// （含「命中标记但解析失败」的误判场景，不能丢字）
+			// （含「命中标记但解析失败」的误判场景，不能丢字），
+			// 但内部工具标记本身不能漏给客户端。
 			if guard != nil {
-				if rest := guard.Flush(); rest != "" {
+				if rest := cleanStreamTail(guard.Flush()); rest != "" {
 					if err := sw.Event(adapter.MakeOpenAIStreamContentChunk(streamID, model, rest)); err != nil {
 						return
 					}
@@ -465,8 +466,10 @@ func (h *ChatHandler) handleWebChat(ctx context.Context, w http.ResponseWriter, 
 			} else if correctionSilent {
 				// 纠正重试那一轮是静默收集的，没有任何增量下发过；
 				// 模型若改成纯文字回答，必须在这里把整段正文补出去。
-				if err := sw.Event(adapter.MakeOpenAIStreamContentChunk(streamID, model, finalText)); err != nil {
-					return
+				if rest := cleanStreamTail(finalText); rest != "" {
+					if err := sw.Event(adapter.MakeOpenAIStreamContentChunk(streamID, model, rest)); err != nil {
+						return
+					}
 				}
 			}
 			if err := sw.Event(adapter.MakeOpenAIStreamFinishChunk(streamID, model)); err != nil {
@@ -1076,17 +1079,19 @@ func (h *MessagesHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// 普通正文：把守卫扣押的尾巴补发完
+		// 普通正文：把守卫扣押的尾巴补发完（但不漏出内部工具标记）
 		if guard != nil {
-			if rest := guard.Flush(); rest != "" {
+			if rest := cleanStreamTail(guard.Flush()); rest != "" {
 				if err := writeText(rest); err != nil {
 					return
 				}
 			}
 		} else if correctionSilentA {
 			// 静默纠正那一轮没有任何增量下发；模型改成纯文字时补发整段
-			if err := writeText(finalText); err != nil {
-				return
+			if rest := cleanStreamTail(finalText); rest != "" {
+				if err := writeText(rest); err != nil {
+					return
+				}
 			}
 		}
 		// 至少给一个 text 块：即使一个字都没有，content 数组也得有形状

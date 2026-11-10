@@ -205,6 +205,56 @@ export default defineSuite({
       });
     });
 
+    // 真机实测：模型会吐一个没有任何 invoke 的空 <tool_calls> 块，
+    // 解析出 0 个调用时误判补发会把内部标记原样发给客户端。
+    //
+    // 注意必须解析 SSE 里的 JSON 再取 content：Go 的 encoding/json 会把
+    // `<` 转义成 `\u003c`，直接对原始响应文本做 includes('<tool_calls>')
+    // 会永远为 false —— 那样用例就是假绿。
+    await t.test('空工具块不漏进流式 content（三条协议）', async () => {
+      // 取出所有 data: 帧里实际下发给客户端的文本（OpenAI / Responses / Anthropic 三种形状）
+      const streamedText = raw => raw.split(/\r?\n/)
+        .filter(l => l.startsWith('data: ') && !l.includes('[DONE]'))
+        .map(l => { try { return JSON.parse(l.slice(6)); } catch { return null; } })
+        .filter(Boolean)
+        .map(o => {
+          if (o.choices?.[0]?.delta?.content) return o.choices[0].delta.content;      // OpenAI
+          if (o.delta?.text) return o.delta.text;                                     // Anthropic text_delta
+          if (o.delta?.type === 'text_delta') return o.delta.text || '';
+          if (o.type === 'response.output_text.delta') return o.delta || '';           // Responses
+          return '';
+        }).join('');
+
+      await withStack({}, async ({ api, upstream }) => {
+        const emptyBlock = '这是一段正常回答。\n<tool_calls>\n</tool_calls>';
+        upstream.setChatDefault({ text: emptyBlock });
+
+        const chat = await api.chat(chatRequest({
+          stream: true,
+          messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: 'hi' }],
+        }));
+        const chatText = streamedText(chat.text);
+        assert.ok(chatText.includes('这是一段正常回答'), `正文被清洗掉了: ${JSON.stringify(chatText)}`);
+        assert.ok(!chatText.includes('<tool_calls>'),
+          `OpenAI 流式漏出工具标记: ${JSON.stringify(chatText)}`);
+
+        const anthropic = await api.messages({
+          model: 'mimo-v2.6-pro', max_tokens: 128, stream: true,
+          system: SYSTEM, messages: [{ role: 'user', content: 'hi' }],
+        });
+        const anthropicText = streamedText(anthropic.text);
+        assert.ok(!anthropicText.includes('<tool_calls>'),
+          `Anthropic 流式漏出工具标记: ${JSON.stringify(anthropicText)}`);
+
+        const responses = await api.post('/v1/responses', {
+          model: 'mimo-v2.6-pro', stream: true, input: 'hi',
+        });
+        const responsesText = streamedText(responses.text);
+        assert.ok(!responsesText.includes('<tool_calls>'),
+          `Responses 流式漏出工具标记: ${JSON.stringify(responsesText)}`);
+      });
+    });
+
     await t.test('aggressive 模式只额外缩品牌词', async () => {
       await withStack({ PROMPT_CLEAN: 'aggressive' }, async ({ api, upstream }) => {
         upstream.onChat({ text: 'ok' });

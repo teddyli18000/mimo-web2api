@@ -328,7 +328,7 @@ func (h *ResponsesHandler) handleStream(ctx context.Context, w http.ResponseWrit
 	calls := parseResponseCalls(finalText, tools)
 
 	if len(calls) == 0 && guard != nil {
-		if rest := guard.Flush(); rest != "" {
+		if rest := cleanStreamTail(guard.Flush()); rest != "" {
 			if err := writeText(rest); err != nil {
 				return
 			}
@@ -336,8 +336,10 @@ func (h *ResponsesHandler) handleStream(ctx context.Context, w http.ResponseWrit
 	} else if len(calls) == 0 && correctionSilent {
 		// 静默纠正那一轮没有任何增量下发；模型若改成纯文字回答，
 		// 必须在这里把整段正文补出去，否则客户端只收到空 message。
-		if err := writeText(finalText); err != nil {
-			return
+		if rest := cleanStreamTail(finalText); rest != "" {
+			if err := writeText(rest); err != nil {
+				return
+			}
 		}
 	}
 	if !messageOpen && len(calls) == 0 {

@@ -49,7 +49,7 @@ export async function createFakeDriver() {
   };
 }
 
-export async function createRealDriver({ bin, configPath }) {
+export async function createRealDriver({ bin, configPath, env = {} }) {
   if (!configPath) {
     throw new Error('real 模式需要 --config <path> 或环境变量 MIMO_REAL_CONFIG（只传路径，不要传内容）');
   }
@@ -80,6 +80,7 @@ export async function createRealDriver({ bin, configPath }) {
       API_KEY: apiKey,
       NO_BROWSER_OPEN: '1',
       MIMO_TEST_WEB_BASE_URL: '',
+      ...env,
     },
   });
   let logTail = '';

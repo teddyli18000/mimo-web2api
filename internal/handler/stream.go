@@ -15,7 +15,23 @@ import (
 	"github.com/teddyli18000/mimo-web2api/internal/adapter"
 	"github.com/teddyli18000/mimo-web2api/internal/mimo"
 	"github.com/teddyli18000/mimo-web2api/internal/pool"
+	"github.com/teddyli18000/mimo-web2api/internal/toolcall"
 )
+
+// cleanStreamTail 清掉流式收尾补发的文本里的工具标记残片。
+//
+// 真机实测：模型会吐一个没有任何 invoke 的空 `<tool_calls>\n</tool_calls>`；
+// MarkerGuard 把它扣住，但解析结果为 0 个调用时走「误判补发」分支，
+// 于是内部标记被当成正文发给客户端。
+//
+// 只在确实含标记时才清洗：普通正文（哪怕提到 "tool_calls" 这个词）原样返回，
+// 避免把用户可见的文字删掉。
+func cleanStreamTail(text string) string {
+	if text == "" || !toolcall.HasToolCallSyntax(text) {
+		return text
+	}
+	return toolcall.StripToolCallSyntax(text)
+}
 
 // sseKeepaliveInterval 等首字节/两个增量之间的心跳间隔。
 //
