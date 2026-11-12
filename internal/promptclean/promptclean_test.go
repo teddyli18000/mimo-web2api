@@ -1,6 +1,7 @@
 package promptclean
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -145,6 +146,64 @@ func TestCleanRoleTextsKeepsOriginalForFingerprint(t *testing.T) {
 	}
 	if cleaned[1][1] != original[1][1] || cleaned[2][1] != original[2][1] {
 		t.Fatal("user/tool 被改写了")
+	}
+}
+
+// 严格版「数据无损」：把三条保守改写逐个逆回去，必须逐字还原成原文。
+// 只检查关键词是否还在，无法发现「多余的空白被吃掉」「另一行被改动」这类损失。
+func TestConservativeIsLossless(t *testing.T) {
+	withMode(t, ModeConservative)
+	out, _ := Clean(dshFixture, true)
+
+	restored := out
+	for _, inv := range []struct {
+		re  *regexp.Regexp
+		rep string
+	}{
+		// 逆序应用：与 Clean 里的规则顺序相反
+		{regexp.MustCompile(`(?i)(You are (?:an?|the) (?:[\w.-]+\s+){0,3}?(?:agent|assistant|model|AI|LLM)) that is (powered by|built on|built by|created by|developed by|made by|trained by)`), "${1} ${2}"},
+		{regexp.MustCompile(`(?i)(Tokens prefixed with @ are paths )that (the user explicitly referenced\.)`), "${1}${2}"},
+		{regexp.MustCompile(`(?i)(You are interacting with the user through the [\w ._-]{1,60}? Web GUI) whose URL is named in the runtime context\.`), "${1} whose URL the runtime context names."},
+	} {
+		restored = inv.re.ReplaceAllString(restored, inv.rep)
+	}
+	if restored != dshFixture {
+		t.Fatalf("清洗不是零信息损失：逆还原后与原文不一致\n原文:\n%s\n\n逆还原:\n%s", dshFixture, restored)
+	}
+}
+
+// 快路径等价：跳过 needle 检查、对每条规则都跑正则，结果必须与 Clean 完全一致。
+// 否则某个 needle 写窄了会静默漏掉本该改写的句子。
+func TestFastPathEquivalence(t *testing.T) {
+	for _, m := range []Mode{ModeConservative, ModeAggressive} {
+		withMode(t, m)
+		for _, text := range []string{
+			dshFixture,
+			"The build is powered by Go and made by the team.", // needle 命中但正则不匹配
+			"请读一下 README.md，再用 grep 找 TODO。",                 // 无 needle
+			"DeepSeek Harness is at /opt/deepseek-harness/app.", // brand-shorten 只该改散文
+			"You are an AI agent trained by the team.",           // 正则有 trained by，needle 曾漏掉
+			"You are a coding agent built on an open model.",     // built on 分支
+		} {
+			got, gotHits := Clean(text, true)
+
+			want := text
+			var wantHits []string
+			for _, r := range rules {
+				if r.aggressive && m != ModeAggressive {
+					continue
+				}
+				next := r.re.ReplaceAllString(want, r.replace)
+				if next != want {
+					want = next
+					wantHits = append(wantHits, r.name)
+				}
+			}
+			if got != want || strings.Join(gotHits, ",") != strings.Join(wantHits, ",") {
+				t.Errorf("mode=%s 快路径与全量正则不等价\ntext=%q\nClean   =%q (%v)\nno-fast =%q (%v)",
+					m, text, got, gotHits, want, wantHits)
+			}
+		}
 	}
 }
 

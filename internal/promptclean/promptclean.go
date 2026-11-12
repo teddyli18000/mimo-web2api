@@ -102,7 +102,8 @@ var rules = []rule{
 		// 正则要求 powered 前紧邻 agent/assistant/model 等角色词，替换后
 		// 紧邻的是 "is"，因此幂等。
 		name:    "identity-clause",
-		needles: []string{" powered by ", " built by ", " created by ", " developed by ", " made by ", " built on "},
+		// needle 必须覆盖正则里的每一个动词短语，否则那个分支会被快路径静默跳过
+		needles: []string{" powered by ", " built on ", " built by ", " created by ", " developed by ", " made by ", " trained by "},
 		re: regexp.MustCompile(`(?i)(You are (?:an?|the) (?:[\w.-]+\s+){0,3}?` +
 			`(?:agent|assistant|model|AI|LLM)) ` +
 			`(powered by|built on|built by|created by|developed by|made by|trained by)`),

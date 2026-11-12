@@ -51,6 +51,9 @@ export default defineSuite({
       await assertUpstreamIsLocal(t, { api, upstream });
     });
 
+    // 记录清洗前后同一请求的 query，末尾比较长度变化
+    const observed = { cleanQuery: null, offQuery: null };
+
     await t.test('默认清洗：上游按指纹判风控时请求能通过', async () => {
       await withStack({ PROMPT_CLEAN: 'conservative' }, async ({ api, upstream }) => {
         upstream.setRiskFilter(FINGERPRINTS);
@@ -64,6 +67,7 @@ export default defineSuite({
         assert.equal(res.json.choices[0].message.content, 'README.md 第 3 行写的是「安装」一节。');
 
         const q = upstream.chatRequests().at(-1).body.query;
+        observed.cleanQuery = q;
         for (const fp of FINGERPRINTS) {
           assert.ok(!q.includes(fp), `指纹没被清洗掉: ${fp}`);
         }
@@ -88,6 +92,7 @@ export default defineSuite({
         assert.notEqual(res.status, 200, '未清洗时应被上游风控拒绝');
         assert.ok(upstream.riskHits >= 1, '风控模拟应命中（网关可能重试 4xx）');
         const q = upstream.chatRequests().at(-1).body.query;
+        observed.offQuery = q;
         assert.ok(q.includes(FINGERPRINTS[0]), 'off 模式下原文应原样送出');
 
         // 风控模拟必须真的会拒绝原文：直接把原文当 query 打一次上游，
@@ -287,6 +292,28 @@ export default defineSuite({
         assert.ok(text.includes('请解释 <tool_calls> 这个标签的用法。'),
           `正文里的裸标签被误删: ${JSON.stringify(text)}`);
       });
+    });
+
+    await t.test('清洗后的 query 长度变化在预算内', async () => {
+      assert.ok(observed.offQuery && observed.cleanQuery, '对照组或清洗组没有拿到 query');
+      const BUDGET = 90_000;
+      assert.ok(observed.cleanQuery.length <= BUDGET,
+        `清洗后 query 超预算: ${observed.cleanQuery.length}`);
+      const delta = Math.abs(observed.cleanQuery.length - observed.offQuery.length);
+      // 三条保守改写只补/换几个词，不该出现大段增删
+      assert.ok(delta <= 64,
+        `清洗前后长度差 ${delta}，超出最小改写应有的范围`);
+      // 结构标记不能被动过
+      for (const marker of ['[System Instruction]', '[Current Query]', QUESTION]) {
+        assert.ok(observed.cleanQuery.includes(marker), `清洗丢了结构标记: ${marker}`);
+      }
+      // 三条保守改写逐个逆回去，必须与未清洗的 query 逐字一致
+      const restore = s => s
+        .replace(/(You are (?:an?|the) (?:[\w.-]+\s+){0,3}?(?:agent|assistant|model|AI|LLM)) that is (powered by|built on|built by|created by|developed by|made by|trained by)/gi, '$1 $2')
+        .replace(/(Tokens prefixed with @ are paths )that (the user explicitly referenced\.)/gi, '$1$2')
+        .replace(/(You are interacting with the user through the [\w ._-]{1,60}? Web GUI) whose URL is named in the runtime context\./gi, '$1 whose URL the runtime context names.');
+      assert.equal(restore(observed.cleanQuery), observed.offQuery,
+        '清洗不是零信息损失：逆还原后与未清洗的 query 不一致');
     });
 
     await t.test('aggressive 模式只额外缩品牌词', async () => {
